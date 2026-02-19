@@ -1,0 +1,214 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>CO Plus Options</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+<div class="tabs" role="tablist" aria-label="Side panel tabs">
+    <button class="tab is-active" role="tab" aria-selected="true" aria-controls="tab-screenshot" id="t-screenshot">
+      Screenshots
+    </button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-videos" id="t-videos" tabindex="-1">
+      Videos
+    </button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-automap" id="t-automap" tabindex="-1">
+Auto-map
+</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-assets" id="t-assets" tabindex="-1">
+Assets
+</button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-other" id="t-other" tabindex="-1">
+Other
+</button>
+    <span class="tabIndicator" aria-hidden="true"></span>
+  </div>
+</header>
+
+<main class="content">
+  <section id="tab-screenshot" class="tabPanel is-active" role="tabpanel" aria-labelledby="t-screenshot">
+    <div class="card">
+<div class="row rowTight">
+  <div>
+    <div class="value">Screenshots</div>
+    <div class="label">Enable/disable the screenshot tool</div>
+  </div>
+
+  <label class="muiSwitch">
+    <input id="screenshotsEnabled" type="checkbox" />
+    <span class="track" aria-hidden="true"></span>
+    <span class="thumb" aria-hidden="true"></span>
+  </label>
+</div>
+</div>
+    <div class="card shotsDependent">
+      <div class="row">
+        <div class="label">Status</div>
+        <div id="statusText" class="value">Idle</div>
+      </div>
+
+      <div class="progressTrack" aria-hidden="true">
+        <div id="progressBar" class="progressBar" style="width: 0%"></div>
+      </div>
+
+      <div class="row">
+        <div class="label">Completed</div>
+        <div id="progressCount" class="value">0 / 0</div>
+      </div>
+<div id="screenshotError" class="errorText" hidden></div>
+
+      <div class="actions">
+        <button id="cancelBtn" class="btn btnOutlined">Cancel</button>
+      </div>
+    </div>
+     <div class="card shotsDependent">
+      <h3>Options</h3>
+      <label class="field">
+        <span>Delay (ms)</span>
+        <input id="delay" type="number" min="0" step="50">
+      </label>
+
+      <label class="field">
+        <span>Scale</span>
+        <input id="scale" type="number" min="0.1" step="0.1">
+      </label>
+
+      <label class="field">
+        <span>Image Type</span>
+        <select id="imageType">
+          <option value="png">png</option>
+          <option value="jpeg">jpeg</option>
+        </select>
+      </label>
+
+      <div class="actions">
+        <button id="save" class="btn btnFilled">Save</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-videos" class="tabPanel" role="tabpanel" aria-labelledby="t-videos" hidden="">
+   <!-- Video enable switch -->
+<div class="card">
+  <div class="row rowTight">
+    <div>
+      <div class="value">Download videos</div>
+      <div class="label">Enable/disable the video downloader</div>
+    </div>
+
+    <label class="muiSwitch">
+      <input id="videosEnabled" type="checkbox" />
+      <span class="track" aria-hidden="true"></span>
+      <span class="thumb" aria-hidden="true"></span>
+    </label>
+  </div>
+</div>
+
+<!-- Video progress -->
+<div class="card videosDependent">
+  <div class="row">
+    <div class="label">Status</div>
+    <div id="videoStatusText" class="value">Idle</div>
+  </div>
+
+  <div class="progressTrack" aria-hidden="true">
+    <div id="videoProgressBar" class="progressBar" style="width: 0%"></div>
+  </div>
+
+  <div class="row">
+    <div class="label">Completed</div>
+    <div id="videoProgressCount" class="value">0 / 0</div>
+  </div>
+<div id="videoError" class="errorText" hidden></div>
+
+  <div class="actions">
+    <button id="videoCancelBtn" class="btn btnOutlined" disabled>Cancel</button>
+  </div>
+</div>
+
+<!-- Video options -->
+<div class="card videosDependent">
+        <h3>Options</h3>
+  <label class="field">
+    <span>Quality</span>
+    <select id="videoQuality">
+      <option value="1080p">1080p</option>
+      <option value="720p">720p</option>
+      <option value="480p">480p</option>
+      <option value="270p">270p</option>
+    </select>
+  </label>
+
+  <div class="actions">
+    <button id="videoSave" class="btn btnFilled">Save</button>
+    <div id="videoStatus" class="hint"></div>
+  </div>
+</div>
+</section>
+<section id="tab-automap" class="tabPanel" role="tabpanel" aria-labelledby="t-automap" hidden>
+<div class="card">
+  <div class="row rowTight">
+    <div>
+      <div class="value">Auto-map</div>
+      <div class="label">Enable/disable Auto-mapping for generating tree</div>
+    </div>
+
+    <label class="muiSwitch">
+      <input id="autoMapEnabled" type="checkbox" />
+      <span class="track" aria-hidden="true"></span>
+      <span class="thumb" aria-hidden="true"></span>
+    </label>
+  </div>
+</div>
+</section>
+<section id="tab-assets" class="tabPanel" role="tabpanel" aria-labelledby="t-assets" hidden>
+<div class="card">
+  <div class="row rowTight">
+    <div>
+      <div class="value">Bulk download</div>
+      <div class="label">Enable/disable “Download All”</div>
+    </div>
+
+    <label class="muiSwitch">
+      <input id="assetsZipEnabled" type="checkbox" />
+      <span class="track" aria-hidden="true"></span>
+      <span class="thumb" aria-hidden="true"></span>
+    </label>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row rowTight">
+    <div>
+      <div class="value">Export CSV</div>
+      <div class="label">Enable/disable “Export CSV”</div>
+    </div>
+
+    <label class="muiSwitch">
+      <input id="assetsCsvEnabled" type="checkbox" />
+      <span class="track" aria-hidden="true"></span>
+      <span class="thumb" aria-hidden="true"></span>
+    </label>
+  </div>
+</div>
+</section>
+<section id="tab-other" class="tabPanel" role="tabpanel" aria-labelledby="t-other" hidden>
+<div class="card">
+  <div class="row rowTight">
+    <div>
+      <div class="value">Individual reload</div>
+      <div class="label">Enables reload individual display previews</div>
+    </div>
+
+    <label class="muiSwitch">
+      <input id="individualReloadEnabled" type="checkbox" />
+      <span class="track" aria-hidden="true"></span>
+      <span class="thumb" aria-hidden="true"></span>
+    </label>
+  </div>
+</div>
+</section>
+    <script src="panel.js"></script>
+  </body>
+</html>
