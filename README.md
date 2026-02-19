@@ -10,7 +10,7 @@ Follow these steps to install the extension in Chrome:
 
 ### 1. Download the Extension ZIP
 
-- Click the download link provided by the developer (for example: **[Download Extension ZIP](https://example.com/extension.zip)**).
+- Click the download link: **[Download Extension ZIP](https://gitlab.com/jessehehl/creative-optimizations-plus/-/archive/main/creative-optimizations-plus-main.zip?ref_type=heads)**.
 - Save the file somewhere easy to find (like your Desktop).
 
 ### 2. Unzip the File
@@ -102,7 +102,7 @@ When a new version is released:
 
 **Main Function:**
 
-- `Auto0map` – Opens a popup to map targeting columns to node types & triggers, then updates targeting config via Lemonpi API.
+- `Auto-map` – Opens a popup to map targeting columns to node types & triggers, then updates targeting config via Lemonpi API.
 
 ---
 
