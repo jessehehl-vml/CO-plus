@@ -10,8 +10,9 @@
  * 6) Tools: Videos
  * 7) Tools: Assets (ZIP/CSV)
  * 8) Tools: Auto-map
- * 9) UI Injection (buttons + iframe buttons)
- * 10) Bootstrapping (observers + init)
+ * 9) Tools: Add external preview
+ * 10) UI Injection (buttons + iframe buttons)
+ * 11) Bootstrapping (observers + init)
  */
 
 // =========================
@@ -37,6 +38,7 @@ const STORAGE_DEFAULTS = {
   autoMapEnabled: true,
 
   individualReloadEnabled: true,
+  addTemplateEnabled: true,
 };
 
 let nodeTypesCache = null;
@@ -430,73 +432,67 @@ async function takeScreenshot(match, ctx) {
       (f) => f.width === ctx.width && f.height === ctx.height,
     ),
   );
-
-  if (!variant) {
-    throw new Error(
-      `No matching ad format for size ${ctx.width}x${ctx.height}`,
-    );
-  }
+  if (!variant)
+    throw new Error(`No matching ad format for ${ctx.width}x${ctx.height}`);
 
   const renderData =
     variant.components?.["urn:lemonpi:artefact:display:content+template"]
       ?.value;
-
   if (!renderData) throw new Error("Render data missing");
 
   const { scale, imageType } = await getScreenshotSettings();
   const mime =
     imageType === "jpeg" || imageType === "jpg" ? "image/jpeg" : "image/png";
-
-  const variantName = match.data?.["content-id"] || "Unnamed Variant";
-  const safeVariantName = sanitizeName(variantName);
+  const safeName = sanitizeName(
+    match.data?.["content-id"] || "Unnamed Variant",
+  );
   const sizeString = `${ctx.width}x${ctx.height}`;
-
   const blobUrl = buildAdBlob(renderData);
 
   try {
-    const response = await runtimeSend({
+    const { success, dataUrl, base64, error, cancelled } = await runtimeSend({
       action: "captureAdBlob",
       payload: { blobUrl },
     });
+    if (!success)
+      throw new Error(error || (cancelled ? "Cancelled" : "Capture failed"));
 
-    if (!response?.success) {
-      throw new Error(
-        response?.error ||
-          (response?.cancelled ? "Cancelled" : "Capture failed"),
-      );
-    }
+    const url = dataUrl || `data:${mime};base64,${base64}`;
 
-    const dataUrl =
-      response.dataUrl || `data:${mime};base64,${response.base64}`;
-
-    const out = await new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       const img = new Image();
-
       img.onload = () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = renderData.width * scale;
-        canvas.height = renderData.height * scale;
-
+        const canvas = Object.assign(document.createElement("canvas"), {
+          width: ctx.width * scale,
+          height: ctx.height * scale,
+        });
         const ctx2d = canvas.getContext("2d");
-        if (!ctx2d) return reject(new Error("Failed to get canvas context"));
+        if (!ctx2d) return reject(new Error("No canvas context"));
 
-        ctx2d.drawImage(img, 0, 0, canvas.width, canvas.height);
+        ctx2d.drawImage(
+          img,
+          0,
+          0,
+          ctx.width * scale,
+          ctx.height * scale, // source crop
+          0,
+          0,
+          ctx.width * scale,
+          ctx.height * scale, // destination size
+        );
 
         canvas.toBlob(
           (blob) => {
             if (!blob) return reject(new Error("Failed to create blob"));
-            resolve({ blob, safeVariantName, sizeString });
+            resolve({ blob, safeVariantName: safeName, sizeString });
           },
           mime,
           1,
         );
       };
-
-      img.onerror = () => reject(new Error("Failed to decode captured image"));
-      img.src = dataUrl;
+      img.onerror = () => reject(new Error("Image decode failed"));
+      img.src = url;
     });
-
-    return out;
   } finally {
     try {
       URL.revokeObjectURL(blobUrl);
@@ -581,6 +577,7 @@ async function screenshotAll() {
 
     // if missing component, still increment progress for the sizes so UI doesn't freeze
     if (!component) {
+      x;
       for (let i = 0; i < sizes.length; i++) incScreenshotProgress();
       continue;
     }
@@ -766,7 +763,6 @@ function parseVastVideoKeys(components = {}) {
 // 6.2 Collect video files for the chosen quality
 
 async function collectVideoFilesForQuality(adVariantsData, videoQuality) {
-  console.log(adVariantsData, videoQuality);
   const videoFiles = [];
   const usedKeys = new Map();
   let missingKeyCount = 0;
@@ -1242,17 +1238,16 @@ async function buildTargetingPayload(nodeTypeSelections) {
   return payload;
 }
 
-// 8.4 UI (missing OpenTargetingPopup and createAutoComplete)
-async function openTargetingPopup(targeting) {
-  // Ensure node types are loaded (fills nodeTypesCache)
-  const nodeTypes = await loadNodeTypes();
-
+// 8.4 UI
+async function openDrawerPopup({
+  title,
+  buildContent, // function(formContainer, enableNextCallback)
+  onNext, // function(payload)
+}) {
   return new Promise((resolve, reject) => {
-    // ---- BACKDROP ----
     const backdrop = document.createElement("div");
     backdrop.className = "backdrop";
 
-    // ---- DRAWER ----
     const drawer = document.createElement("div");
     drawer.className = "drawer";
     drawer.setAttribute("role", "dialog");
@@ -1262,152 +1257,162 @@ async function openTargetingPopup(targeting) {
       if (!drawer.contains(e.target)) close("cancel");
     };
 
-    // ---- HEADER ----
+    // HEADER
     const header = document.createElement("div");
     header.className = "header";
-
-    const title = document.createElement("h2");
-    title.className = "title";
-    title.textContent = "Auto-map";
-
+    const titleEl = document.createElement("h2");
+    titleEl.className = "title";
+    titleEl.textContent = title;
     const closeBtn = document.createElement("button");
     closeBtn.className = "close-btn";
     closeBtn.type = "button";
     closeBtn.innerHTML = "✕";
     closeBtn.onclick = () => close("cancel");
+    header.append(titleEl, closeBtn);
 
-    header.append(title, closeBtn);
-
-    // ---- CONTENT ----
+    // CONTENT
     const content = document.createElement("div");
     content.className = "content";
     content.style.cssText = "flex: 1; overflow-y: auto; padding: 16px;";
 
-    const list = document.createElement("ul");
-    list.className = "input-root";
-
-    // ---- FOOTER ----
+    // FOOTER
     const footer = document.createElement("div");
     footer.className = "footer";
     footer.appendChild(document.createElement("hr"));
-
     const nextBtn = document.createElement("button");
     nextBtn.className = "next-btn";
     nextBtn.type = "button";
     nextBtn.textContent = "Next";
     nextBtn.disabled = true;
     nextBtn.style.opacity = "0.5";
-
     const cancelBtn = document.createElement("button");
     cancelBtn.className = "cancel-btn";
     cancelBtn.type = "button";
     cancelBtn.textContent = "Cancel";
     cancelBtn.onclick = () => close("cancel");
-
     const buttonsDiv = document.createElement("div");
     buttonsDiv.className = "buttons";
     buttonsDiv.append(cancelBtn, nextBtn);
     footer.appendChild(buttonsDiv);
 
-    // enable Next if at least one row has both values
-    function recomputeNextEnabled() {
-      const rows = Array.from(list.querySelectorAll(".list-item"));
-      const anyComplete = rows.some((li) => {
-        const main = li.querySelector(".input-base input")?.value?.trim();
-        const sub = li.querySelector(".second-input-base input")?.value?.trim();
-        return !!(main && sub);
-      });
-
-      nextBtn.disabled = !anyComplete;
-      nextBtn.style.opacity = anyComplete ? "1" : "0.5";
+    // Enable Next logic
+    function enableNext(enabled) {
+      nextBtn.disabled = !enabled;
+      nextBtn.style.opacity = enabled ? "1" : "0.5";
     }
 
+    // Build custom inputs
+    buildContent(content, enableNext);
+
+    // Next button handler
     nextBtn.onclick = () => {
       try {
-        const payload = {};
-        list.querySelectorAll(".list-item").forEach((li) => {
-          const mainInput = li.querySelector(".input-base input");
-          const subInput = li.querySelector(".second-input-base input");
-          const column = mainInput?.dataset.column || mainInput?.name;
-          if (!column) return;
-
-          payload[column] = {
-            value: targeting[column],
-            nodeType: mainInput?.value || null,
-            trigger: subInput?.value || null,
-          };
-        });
-
+        const payload = onNext();
         close("next", payload);
       } catch (err) {
         console.error(err);
+        close("cancel");
       }
     };
 
-    // ---- Create Inputs ----
-    Object.keys(targeting).forEach((column) => {
-      const li = document.createElement("li");
-      li.className = "list-item";
-
-      const label = document.createElement("p");
-      label.className = "list-label";
-      label.textContent = column;
-
-      const autocompleteInput = createAutocompleteInput(
-        column,
-        nodeTypes,
-        recomputeNextEnabled,
-      );
-      li.append(label, autocompleteInput);
-      list.appendChild(li);
-    });
-
-    content.appendChild(list);
     drawer.append(header, content, footer);
     document.body.append(backdrop, drawer);
 
-    // ---- LOCK BODY SCROLL ----
+    // Lock body scroll
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
-    // ---- ANIMATE IN ----
+    // Animate in
     requestAnimationFrame(() => {
       backdrop.style.opacity = "1";
       drawer.style.transform = "translateX(0)";
     });
 
-    // ---- ESC CLOSE ----
-    const escHandler = (e) => {
-      if (e.key === "Escape") close("cancel");
+    // ESC close
+    const keyHandler = (e) => {
+      if (e.key === "Escape") {
+        close("cancel");
+      } else if (e.key === "Enter") {
+        // Only trigger Next if it's enabled
+        if (!nextBtn.disabled) {
+          try {
+            const payload = onNext();
+            close("next", payload);
+          } catch (err) {
+            console.error(err);
+            close("cancel");
+          }
+        }
+      }
     };
-    document.addEventListener("keydown", escHandler);
-
-    // initial
-    recomputeNextEnabled();
-
-    // ---- CLOSE HANDLER ----
+    document.addEventListener("keydown", keyHandler);
     function close(action, payload) {
       drawer.style.transform = "translateX(100%)";
       backdrop.style.opacity = "0";
-
       setTimeout(() => {
-        try {
-          backdrop.remove();
-          drawer.remove();
-          document.body.style.overflow = prevOverflow;
-          document.removeEventListener("keydown", escHandler);
-
-          if (action === "next") resolve(payload);
-          else reject("cancelled");
-        } catch (err) {
-          console.error(err);
-          if (action === "next") resolve(payload);
-          else reject("cancelled");
-        }
+        backdrop.remove();
+        drawer.remove();
+        document.body.style.overflow = prevOverflow;
+        document.removeEventListener("keydown", keyHandler);
+        if (action === "next") resolve(payload);
+        else reject("cancelled");
       }, 225);
     }
   });
 }
+async function openTargetingPopup(targeting) {
+  const nodeTypes = await loadNodeTypes();
+
+  return openDrawerPopup({
+    title: "Auto-map",
+    buildContent: (content, enableNext) => {
+      const list = document.createElement("ul");
+      list.className = "input-root";
+      function recompute() {
+        const rows = Array.from(list.querySelectorAll(".list-item"));
+        const anyComplete = rows.some((li) => {
+          const main = li.querySelector(".input-base input")?.value?.trim();
+          const sub = li
+            .querySelector(".second-input-base input")
+            ?.value?.trim();
+          return !!(main && sub);
+        });
+        enableNext(anyComplete);
+      }
+      Object.keys(targeting).forEach((column) => {
+        const li = document.createElement("li");
+        li.className = "list-item";
+        const label = document.createElement("p");
+        label.className = "list-label";
+        label.textContent = column;
+        const autocompleteInput = createAutocompleteInput(
+          column,
+          nodeTypes,
+          recompute,
+        );
+        li.append(label, autocompleteInput);
+        list.appendChild(li);
+      });
+      content.appendChild(list);
+    },
+    onNext: () => {
+      const payload = {};
+      document.querySelectorAll(".list-item").forEach((li) => {
+        const mainInput = li.querySelector(".input-base input");
+        const subInput = li.querySelector(".second-input-base input");
+        const column = mainInput?.dataset.column || mainInput?.name;
+        if (!column) return;
+        payload[column] = {
+          value: targeting[column],
+          nodeType: mainInput?.value || null,
+          trigger: subInput?.value || null,
+        };
+      });
+      return payload;
+    },
+  });
+}
+
 function createAutocompleteInput(column, nodeTypes, onAnyChange) {
   const root = document.createElement("div");
   root.className = "input-root";
@@ -1633,12 +1638,506 @@ async function autoMap() {
     console.warn("[auto-map] cancelled/failed:", err);
   }
 }
-
 // =========================
-// 9) UI Injection (buttons + iframe buttons)
+// 9) Add External Preview
+// =========================
+// Store parameters globally
+window.externalTemplateParams = null;
+window.viewButtonAdded = false; // track if addViewButton is already done
+window.viewToggleSetup = false;
+window.customViewWasActive = false;
+
+// === Helper: create element quickly ===
+function createEl(tag, className, innerHTML) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (innerHTML !== undefined) el.innerHTML = innerHTML;
+  return el;
+}
+
+// === Popup ===
+function openExternalPreviewPopup() {
+  return openDrawerPopup({
+    title: "Add External Template",
+    buildContent: (content, enableNext) => {
+      const formFields = [
+        { label: "Template URL", name: "templateUrl", type: "text", value: "" },
+        { label: "Width", name: "width", type: "number", value: "" },
+        { label: "Height", name: "height", type: "number", value: "" },
+      ];
+
+      formFields.forEach((field) => {
+        const wrap = createEl("div", "form-field");
+        const label = createEl("label", "popup-label", field.label);
+        const inputBase = createEl("div", "popup-input-base");
+        const input = createEl("input", "popup-input");
+        input.type = field.type;
+        input.name = field.name;
+        input.value = field.value;
+
+        // Validate before enabling Next
+        input.addEventListener("input", () => {
+          const inputs = Array.from(
+            content.querySelectorAll(".form-field input"),
+          );
+          const allFilled = inputs.every((inp) => inp.value.trim() !== "");
+          const allValid = inputs.every(
+            (inp) => inp.type !== "number" || Number(inp.value) > 0,
+          );
+          enableNext(allFilled && allValid);
+        });
+
+        // Focus styling
+        input.addEventListener("focus", () =>
+          inputBase.classList.add("focussed"),
+        );
+        input.addEventListener("blur", () =>
+          inputBase.classList.remove("focussed"),
+        );
+
+        const fieldset = createEl("fieldset", "popup-input-outline");
+        inputBase.append(input, fieldset);
+        wrap.append(label, inputBase);
+        content.appendChild(wrap);
+      });
+    },
+    onNext: () => {
+      const payload = {};
+      document.querySelectorAll(".form-field input").forEach((input) => {
+        payload[input.name] = input.value.trim();
+      });
+      return payload;
+    },
+  }).then((payload) => {
+    addExternalTemplate(
+      parseInt(payload.width, 10),
+      parseInt(payload.height, 10),
+      payload.templateUrl,
+    );
+  });
+}
+
+// === External tree injection ===
+async function addExternalTemplate(width, height, templateUrl) {
+  // store parameters for reuse
+  window.externalTemplateParams = { width, height, templateUrl };
+
+  const variants = await fetchAdVariants();
+  const existingTree = document.querySelector('ul[role="tree"]')?.parentElement;
+  if (existingTree) {
+    existingTree.style.display = "none";
+  }
+
+  const myTree = buildVariantTree(variants, width, height, templateUrl);
+  if (existingTree?.parentElement) {
+    existingTree.parentElement.insertBefore(myTree, existingTree);
+  }
+
+  // ✅ Auto-click top variant after tree is built
+  const firstVariant = myTree.querySelector("#my-variant-tree li");
+  if (firstVariant) {
+    firstVariant.click(); // triggers li click handler
+  }
+
+  // Add custom view button once
+  if (!window.viewButtonAdded) {
+    addViewButton();
+    window.viewButtonAdded = true;
+  }
+
+  // Set up view toggle listeners once
+  if (!window.viewToggleSetup) {
+    setupViewToggleListener();
+    window.viewToggleSetup = true;
+  }
+}
+function addViewButton() {
+  const toggleGroup = document.querySelector(".MuiToggleButtonGroup-root");
+  if (!toggleGroup) {
+    console.warn("Toggle button group not found");
+    return;
+  }
+
+  // Deactivate existing buttons initially
+  const existingButtons = toggleGroup.querySelectorAll("button");
+  existingButtons.forEach((btn) => {
+    btn.classList.remove("Mui-selected", "btn-active");
+    btn.setAttribute("aria-pressed", "false");
+  });
+
+  // Create custom button
+  const customButton = document.createElement("button");
+  customButton.className = "custom-view-btn btn-active";
+  customButton.type = "button";
+  customButton.setAttribute("aria-label", "Custom view");
+  customButton.setAttribute("aria-pressed", "true");
+  customButton.tabIndex = 0;
+
+  const iconSpan = document.createElement("span");
+  iconSpan.className = "material-icons";
+  iconSpan.textContent = "dashboard_customize";
+
+  const rippleSpan = document.createElement("span");
+  rippleSpan.className = "MuiTouchRipple-root css-4mb1j7";
+
+  customButton.append(iconSpan, rippleSpan);
+  window.customViewWasActive = true;
+  // ✅ Click handler: activate and re-run addExternalTemplate() with saved params
+  customButton.addEventListener("click", () => {
+    // deactivate all buttons
+    toggleGroup.querySelectorAll("button").forEach((btn) => {
+      btn.classList.remove("btn-active", "Mui-selected");
+      btn.setAttribute("aria-pressed", "false");
+    });
+    // activate this one
+    customButton.classList.add("btn-active");
+    customButton.setAttribute("aria-pressed", "true");
+    window.customViewWasActive = true;
+
+    // ✅ Re-run addExternalTemplate with saved params
+    if (window.externalTemplateParams) {
+      addExternalTemplate(
+        window.externalTemplateParams.width,
+        window.externalTemplateParams.height,
+        window.externalTemplateParams.templateUrl,
+      );
+    }
+  });
+
+  // Append new button
+  toggleGroup.appendChild(customButton);
+
+  // Give the button just before new button a class
+  const prevButton = customButton.previousElementSibling;
+  if (prevButton && prevButton.tagName.toLowerCase() === "button") {
+    prevButton.classList.add("before-custom-btn");
+  }
+
+  // Clicking other buttons removes custom active state
+  toggleGroup.querySelectorAll("button").forEach((btn) => {
+    if (btn !== customButton) {
+      btn.addEventListener("click", () => {
+        customButton.classList.remove("btn-active");
+        customButton.setAttribute("aria-pressed", "false");
+      });
+    }
+  });
+}
+
+// === View toggle listener ===
+function setupViewToggleListener() {
+  const toggleButtons = document.querySelectorAll(
+    'button[aria-label="List view"], button[aria-label="Gallery view"], button[aria-label="Canvas view"]',
+  );
+
+  toggleButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!window.customViewWasActive) {
+        return;
+      }
+      window.customViewWasActive = false;
+
+      button.classList.add("Mui-selected");
+      button.setAttribute("aria-pressed", "true");
+
+      // Remove custom tree
+      document.querySelector("#my-variant-tree")?.parentElement?.remove();
+
+      // Show old tree
+      const oldTreeParent =
+        document.querySelector('ul[role="tree"]')?.parentElement;
+      if (!oldTreeParent) return;
+
+      oldTreeParent.style.display = "";
+
+      // ✅ Find the first child variant using working selector
+      const firstChildLi = document.querySelector(
+        'ul[role="tree"] > li > ul > div > div > li',
+      );
+      if (!firstChildLi) {
+        console.warn("First child variant not found");
+        return;
+      }
+
+      // Click its checkbox if present
+      const checkbox = firstChildLi.querySelector('input[type="checkbox"]');
+      if (checkbox) {
+        checkbox.click();
+      } else {
+        firstChildLi.querySelector(".MuiTreeItem-content")?.click();
+      }
+    });
+  });
+}
+
+// === Add custom iframe preview ===
+async function addCustomIframe(template, variants) {
+  const previewRoot = document
+    .querySelector(
+      'button[aria-label="Fit to view"], button[aria-label="Actual size"], button[aria-label="Reload"]',
+    )
+    ?.closest(".MuiPaper-root")?.previousElementSibling.firstChild;
+
+  if (!previewRoot) {
+    console.warn("Preview root not found");
+    return;
+  }
+
+  // Safely remove all children
+  while (previewRoot.firstChild) {
+    previewRoot.removeChild(previewRoot.firstChild);
+  }
+
+  const previewWrap = createEl("div", "preview-wrap");
+  const customCard = await buildCustomIframeCard(template, variants);
+  if (!customCard) {
+    console.warn("Failed to build custom card for", template.contentId);
+    return;
+  }
+
+  customCard.setAttribute("aria-label", template.contentId);
+  customCard.setAttribute("data-template-width", template.width);
+  customCard.setAttribute("data-template-height", template.height);
+
+  previewWrap.appendChild(customCard);
+  previewRoot.appendChild(previewWrap);
+}
+
+// === Variant tree ===
+function buildVariantTree(variants, formWidth, formHeight, templateUrl) {
+  const parentVariants = variants.filter(
+    (v) => !(v.data.label || "").includes("HTML5"),
+  );
+
+  const container = createEl("div", "variant-tree-wrapper");
+
+  // MUI search input
+  const muiInputWrapper = createEl(
+    "div",
+    "MuiInputBase-root MuiOutlinedInput-root MuiInputBase-colorPrimary MuiInputBase-fullWidth MuiInputBase-formControl MuiInputBase-sizeSmall MuiInputBase-adornedEnd css-1dh3m2g",
+  );
+  const searchInput = createEl(
+    "input",
+    "MuiInputBase-input MuiOutlinedInput-input MuiInputBase-inputSizeSmall MuiInputBase-inputAdornedEnd css-u9e8k",
+  );
+  searchInput.type = "text";
+  searchInput.placeholder = "Search variants";
+  searchInput.id = "_r_c_";
+  searchInput.addEventListener("focus", () =>
+    muiInputWrapper.classList.add("focused"),
+  );
+  searchInput.addEventListener("blur", () =>
+    muiInputWrapper.classList.remove("focused"),
+  );
+
+  const searchIcon = document.createElementNS(
+    "http://www.w3.org/2000/svg",
+    "svg",
+  );
+  searchIcon.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  searchIcon.setAttribute("width", "24");
+  searchIcon.setAttribute("height", "24");
+  searchIcon.setAttribute("fill", "none");
+  searchIcon.setAttribute("viewBox", "0 0 24 24");
+  searchIcon.classList.add(
+    "MuiSvgIcon-root",
+    "MuiSvgIcon-colorDefault",
+    "MuiSvgIcon-fontSizeMedium",
+    "css-11kbvuf",
+  );
+
+  const path1 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path1.setAttribute("fill", "#fff");
+  path1.setAttribute("fill-opacity", "0.01");
+  path1.setAttribute("d", "M0 0h24v24H0z");
+
+  const path2 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path2.setAttribute("fill", "currentColor");
+  path2.setAttribute(
+    "d",
+    "m19.647 18.237-3.041-3.042a7 7 0 0 0 1.4-4.192A7 7 0 0 0 11.004 4 7 7 0 0 0 4 11.003a6.998 6.998 0 0 0 11.195 5.603l3.042 3.041c.2.2.3.3.41.33.1.03.21.03.31 0 .05-.02.1-.04.15-.09.07-.06.15-.14.26-.25l.28-.28c.2-.2.3-.3.33-.41.03-.1.03-.21 0-.31-.04-.11-.14-.21-.33-.41zm-8.644-2.231a5.004 5.004 0 0 1-5.002-5.003 5.004 5.004 0 0 1 5.002-5.002 5.004 5.004 0 0 1 5.003 5.002 5.004 5.004 0 0 1-5.003 5.003",
+  );
+
+  searchIcon.append(path1, path2);
+
+  const fieldset = createEl(
+    "fieldset",
+    "MuiOutlinedInput-notchedOutline css-5v2ak0",
+  );
+  fieldset.setAttribute("aria-hidden", "true");
+  const legend = createEl("legend", "css-w4cd9x");
+  const spanSpace = createEl("span", "notranslate", "\u200B");
+  spanSpace.setAttribute("aria-hidden", "true");
+  legend.appendChild(spanSpace);
+  fieldset.appendChild(legend);
+
+  muiInputWrapper.append(searchInput, searchIcon, fieldset);
+  container.appendChild(muiInputWrapper);
+
+  // Title
+  container.appendChild(
+    createEl(
+      "span",
+      "MuiTypography-root MuiTypography-body1 MuiTypography-noWrap css-1f1wxvc",
+      "Ad variants",
+    ),
+  );
+
+  // Tree
+  const tree = createEl("ul");
+  tree.setAttribute("role", "tree");
+  tree.setAttribute("aria-multiselectable", "false");
+  tree.id = "my-variant-tree";
+
+  parentVariants.forEach((variant) => {
+    const contentId = variant.data["content-id"];
+    const li = createEl("li", "variant-tree-item");
+    li.setAttribute("role", "treeitem");
+    li.tabIndex = -1;
+    li.dataset.contentId = contentId;
+
+    const row = createEl("div", "variant-tree-content", contentId);
+    li.appendChild(row);
+
+    li.addEventListener("click", () => {
+      tree
+        .querySelectorAll(".selected")
+        .forEach((el) => el.classList.remove("selected"));
+      li.classList.add("selected");
+
+      const template = {
+        contentId,
+        width: parseInt(formWidth, 10) || 0,
+        height: parseInt(formHeight, 10) || 0,
+        templateUrl,
+      };
+      addCustomIframe(template, variants);
+    });
+
+    tree.appendChild(li);
+  });
+
+  container.appendChild(tree);
+
+  // Search filter
+  searchInput.addEventListener("input", () => {
+    const term = searchInput.value.toLowerCase();
+    tree.querySelectorAll("li").forEach((li) => {
+      const match = li.dataset.contentId.toLowerCase().includes(term);
+      li.classList.toggle("hidden", !match);
+    });
+  });
+
+  return container;
+}
+
+// === Preview card ===
+async function buildCustomIframeCard(template, variants) {
+  const match = variants.find(
+    (v) => v.data["content-id"].trim() === template.contentId,
+  );
+  if (!match) return console.warn("Variant not found:", template.contentId);
+
+  const adVariant = match.data["ad-variants"].find((v) =>
+    v["ad-formats"]?.some(
+      (f) => f.width === template.width && f.height === template.height,
+    ),
+  );
+  if (!adVariant)
+    return console.warn("Size not found:", template.width, template.height);
+
+  const renderData =
+    adVariant.components["urn:lemonpi:artefact:display:content+template"]
+      ?.value;
+
+  const cardDiv = createEl("div", "local-preview-card");
+  const iframe = createEl("iframe");
+  Object.assign(iframe, {
+    width: template.width,
+    height: template.height,
+    src: `${template.templateUrl}?_lemonpiPreview`,
+  });
+  iframe.style.border = "none";
+
+  // --- Define the handler once ---
+  const messageHandler = (event) => {
+    if (
+      event.data?.type === "lemonpi-awaiting-config" &&
+      event.source === iframe.contentWindow
+    ) {
+      sendConfig();
+    }
+  };
+
+  // Send config to iframe
+  const sendConfig = () => {
+    const configMsg = {
+      type: "lemonpi-config",
+      config: { exportContent: renderData.content },
+    };
+    iframe.contentWindow.postMessage(configMsg, "*");
+  };
+
+  // Attach listener (ensuring duplicates aren't created)
+  const attachHandshakeListener = () => {
+    window.removeEventListener("message", messageHandler); // remove old one if exists
+    window.addEventListener("message", messageHandler);
+  };
+
+  // Initial attach
+  attachHandshakeListener();
+
+  cardDiv.appendChild(iframe);
+
+  // --- Info area ---
+  const infoOuter = createEl("div", "info-outer");
+  const upperInfo = createEl("div", "info-upper");
+  const statusAndButtons = createEl("div", "status-and-buttons");
+
+  const chipDiv = createEl(
+    "div",
+    "info-status",
+    `<span class=""><div class="info-chip">Draft</div></span>`,
+  );
+  statusAndButtons.appendChild(chipDiv);
+
+  const reloadBtn = createEl(
+    "button",
+    "iframe-reload-btn",
+    `<span class="material-icons">refresh</span>`,
+  );
+  reloadBtn.type = "button";
+  reloadBtn.addEventListener("click", () => {
+    iframe.src = `${template.templateUrl}?_lemonpiPreview`; // reload content
+    attachHandshakeListener(); // reattach handshake fresh
+  });
+  statusAndButtons.appendChild(reloadBtn);
+
+  upperInfo.appendChild(statusAndButtons);
+  infoOuter.appendChild(upperInfo);
+
+  const lowerInfo = createEl(
+    "div",
+    "lower-info",
+    `
+  <div class="lower-info-wrap">
+    <div class="template-info">
+      <p class="template-contentId" aria-label="${template.contentId}">${template.contentId}</p>
+    </div>
+    <span class="template-details">CUSTOM · ${template.width}x${template.height}</span>
+  </div>
+`,
+  );
+  infoOuter.appendChild(lowerInfo);
+
+  cardDiv.appendChild(infoOuter);
+  return cardDiv;
+}
+// =========================
+// 10) UI Injection (buttons + iframe buttons)
 // =========================
 
-// 9.1 Helpers
+// 10.1 Helpers
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 function findButtonByTextIncludes(text, root = document) {
@@ -1682,7 +2181,7 @@ function ensureButton(opts) {
   return el;
 }
 
-// 9.2 Button updates
+// 10.2 Button updates
 const screenshotUI = {
   wired: false,
   btn: null,
@@ -1787,7 +2286,7 @@ function removeScreenshotButton() {
   teardownScreenshotCountUpdater();
 }
 
-// 9.3 - inject buttons
+// 10.3 - inject buttons
 async function injectButtons() {
   const url = location.href;
   const params = new URLSearchParams(location.search);
@@ -1798,12 +2297,14 @@ async function injectButtons() {
     assetsZipEnabled,
     assetsCsvEnabled,
     autoMapEnabled,
+    addTemplateEnabled,
   } = await storageGet({
     screenshotsEnabled: STORAGE_DEFAULTS.screenshotsEnabled,
     videosEnabled: STORAGE_DEFAULTS.videosEnabled,
     assetsZipEnabled: STORAGE_DEFAULTS.assetsZipEnabled,
     assetsCsvEnabled: STORAGE_DEFAULTS.assetsCsvEnabled,
     autoMapEnabled: STORAGE_DEFAULTS.autoMapEnabled,
+    addTemplateEnabled: STORAGE_DEFAULTS.addTemplateEnabled,
   });
   // ---------- Screenshot button (preview) ----------
   const isPreview = params.get("ad-variants-preview") === "true";
@@ -1823,8 +2324,19 @@ async function injectButtons() {
       });
       wireScreenshotCountUpdater(btn);
     }
+    if (addTemplateEnabled) {
+      ensureButton({
+        id: "preview-btn",
+        parent: shareButton.parentNode,
+        afterElement: shareButton.previousSibling,
+        className: "preview-btn next-btn",
+        text: `Add template`,
+        onClick: openExternalPreviewPopup, // Section 5
+      });
+    } else {
+      document.getElementById("preview-btn")?.remove();
+    }
   }
-
   // ---------- Assets buttons (ZIP + CSV) ----------
   const uploadButton = document.querySelector(SEL.uploadButton);
   if (uploadButton && RE.assetsPage.test(url)) {
@@ -1919,7 +2431,7 @@ async function injectButtons() {
   }
 }
 
-// 9.4 inject iframe buttons
+// 10.4 inject iframe buttons
 async function injectIframeButtons() {
   const { screenshotsEnabled, individualReloadEnabled } = await storageGet({
     screenshotsEnabled: STORAGE_DEFAULTS.screenshotsEnabled,
@@ -1945,11 +2457,10 @@ async function injectIframeButtons() {
     } else if (!existingReloadBtn) {
       // 🟢 Add reload button if enabled
       const reloadBtn = document.createElement("button");
-      reloadBtn.className =
-        "MuiButtonBase-root MuiIconButton-root MuiIconButton-colorGrey MuiIconButton-sizeMedium css-hmbvib iframe-reload-btn";
+      reloadBtn.className = "iframe-reload-btn";
       reloadBtn.type = "button";
       reloadBtn.tabIndex = 0;
-      reloadBtn.innerHTML = `<span class="material-icons">refresh</span><span class="MuiTouchRipple-root css-4mb1j7"></span>`;
+      reloadBtn.innerHTML = `<span class="material-icons">refresh</span>`;
       reloadBtn.addEventListener("click", () => (iframe.src = iframe.src));
       readyChip.insertAdjacentElement("afterend", reloadBtn);
     }
@@ -2026,7 +2537,7 @@ async function injectIframeButtons() {
   });
 }
 // =========================
-// 10) Bootstrapping (observers + init)
+// 11) Bootstrapping (observers + init)
 // =========================
 
 const scheduleInject = debounce(

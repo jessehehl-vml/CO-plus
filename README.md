@@ -40,11 +40,12 @@ Follow these steps to install the extension in Chrome:
 
 - Open the side panel by clicking the extension’s icon.
 - Use the switches to turn on/off features like:
-- **Screenshots**
-- **Videos**
-- **Auto‑map**
-- **Assets (ZIP/CSV)**
-- **Individual Reload**
+  - **Screenshots**
+  - **Videos**
+  - **Auto‑map**
+  - **Assets (ZIP/CSV)**
+  - **Individual Reload**
+  - **External Template Preview**
 
 ---
 
@@ -136,5 +137,13 @@ When a new version is released:
 **Main Function:**
 
 - `Reload` - Adds a reload button per ad variant on the preview page.
+
+---
+
+### 6. Other – External Template Preview
+
+**Main Function:**
+
+- `Add Template` - Adds a button to add an external template iframe to the preview page.
 
 ---

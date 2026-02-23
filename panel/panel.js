@@ -21,6 +21,7 @@ const DEFAULTS = {
 
   // other
   individualReloadEnabled: true,
+  addTemplateEnabled: true,
 };
 
 let wasScreenshotRunning = false;
@@ -69,6 +70,7 @@ const els = {
 
   // other: options:
   indvReload: document.getElementById("individualReloadEnabled"),
+  addTemplateEnabled: document.getElementById("addTemplateEnabled"), // <— FIXED NAME
 };
 
 // --------------------
@@ -353,6 +355,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // other
     if (els.indvReload)
       els.indvReload.checked = !!settings.individualReloadEnabled;
+    if (els.addTemplateEnabled)
+      els.addTemplateEnabled.checked = !!settings.addTemplateEnabled;
   });
 
   els.sEnabled?.addEventListener("change", (e) => {
@@ -382,5 +386,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   els.indvReload?.addEventListener("change", (e) => {
     chrome.storage.sync.set({ individualReloadEnabled: e.target.checked });
+  });
+
+  els.addTemplateEnabled?.addEventListener("change", (e) => {
+    chrome.storage.sync.set({ addTemplateEnabled: e.target.checked });
   });
 });

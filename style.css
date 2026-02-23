@@ -94,7 +94,8 @@
   -webkit-box-pack: justify;
   justify-content: space-between;
 }
-.list-label {
+.list-label,
+.popup-label {
   margin: 0px;
   font-family:
     Inter,
@@ -112,7 +113,14 @@
   font-size: 1.4rem;
   line-height: 1.5;
 }
-.input-base {
+.popup-label {
+  font-size: 1.4rem;
+  line-height: 1.5;
+  font-weight: 600;
+  color: rgba(8, 32, 64, 0.76);
+}
+.input-base,
+.popup-input-base {
   font-family:
     Inter,
     -apple-system,
@@ -140,7 +148,11 @@
   padding-left: 14px;
   padding-right: 14px;
 }
-.input {
+.popup-input-base {
+  margin: 8px 0px 16px 0px;
+}
+.input,
+.popup-input {
   font: inherit;
   letter-spacing: inherit;
   color: currentcolor;
@@ -158,6 +170,9 @@
   animation-duration: 10ms;
   padding: 8.5px 0px;
 }
+.form-field {
+  padding: 0 8px;
+}
 .icon-wrap {
   display: flex;
 }
@@ -172,12 +187,14 @@
   align-items: center;
   justify-content: center;
 }
-input:focus {
+input:focus,
+.popup-input:focus {
   outline: none; /* remove browser default outline */
   border-color: transparent; /* remove MUI focus border */
   box-shadow: none; /* remove MUI focus shadow */
 }
-.input-outline {
+.input-outline,
+.popup-input-outline {
   text-align: left;
   position: absolute;
   bottom: 0px;
@@ -194,10 +211,12 @@ input:focus {
   overflow: hidden;
   border-color: rgba(0, 0, 0, 0.23);
 }
-.input-base:hover .input-outline {
+.input-base:hover .input-outline,
+.popup-input-base:hover .popup-input-outline {
   border-color: rgb(18, 22, 25);
 }
-.input-base.focussed .input-outline {
+.input-base.focussed .input-outline,
+.popup-input-base.focussed .popup-input-outline {
   border-color: rgb(0, 20, 204);
   border-width: 2px;
 }
@@ -505,4 +524,389 @@ input:focus {
 }
 .camera-icon {
   margin-right: 8px;
+}
+.variant-tree-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1 1 0%;
+  padding: 16px;
+  overflow: hidden;
+}
+#my-variant-tree {
+  padding: 0px;
+  margin: 0px;
+  list-style: none;
+  outline: 0px;
+  position: relative;
+  overflow: hidden auto;
+}
+.variant-tree-item {
+  list-style: none;
+  margin: 4px 0px 0px;
+  padding: 0px;
+  outline: 0px;
+}
+.variant-tree-content {
+  padding: 4px 8px;
+  border-radius: 6px;
+  width: 100%;
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  -webkit-box-align: center;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.variant-tree-content:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+.variant-tree-item.selected .variant-tree-content {
+  background-color: rgba(0, 20, 204, 0.08);
+}
+.search-input-wrapper {
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol";
+  font-weight: 400;
+  font-size: 1.4rem;
+  line-height: 1.4375em;
+  color: rgb(18, 22, 25);
+  box-sizing: border-box;
+  cursor: text;
+  display: inline-flex;
+  -webkit-box-align: center;
+  align-items: center;
+  width: 100%;
+  position: relative;
+  border-radius: 6px;
+  padding-right: 14px;
+}
+.search-input {
+  font: inherit;
+  letter-spacing: inherit;
+  color: currentcolor;
+  border: 0px;
+  box-sizing: content-box;
+  background: none;
+  height: 1.4375em;
+  margin: 0px;
+  -webkit-tap-highlight-color: transparent;
+  display: block;
+  min-width: 0px;
+  width: 100%;
+  animation-name: mui-auto-fill-cancel;
+  animation-duration: 10ms;
+  padding: 8.5px 0px 8.5px 14px;
+}
+.search-fieldset {
+  text-align: left;
+  position: absolute;
+  inset: -5px 0px 0px;
+  margin: 0px;
+  padding: 0px 8px;
+  pointer-events: none;
+  border-radius: inherit;
+  border-style: solid;
+  border-width: 1px;
+  overflow: hidden;
+  min-width: 0%;
+  border-color: rgba(0, 0, 0, 0.23);
+}
+.search-input-wrapper:hover .search-fieldset {
+  border-color: rgb(18, 22, 25);
+}
+.search-input-wrapper.focused .search-fieldset {
+  border-color: rgb(0, 20, 204);
+  border-width: 2px;
+}
+.search-legend {
+  float: unset;
+  width: auto;
+  line-height: 11px;
+  overflow: hidden;
+  padding: 0px;
+  transition: width 150ms cubic-bezier(0, 0, 0.2, 1);
+}
+.tree-span {
+  margin: 0px;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol";
+  font-size: 1.4rem;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+@keyframes mui-auto-fill-cancel {
+  0% {
+    display: block;
+  }
+}
+
+.local-preview-card {
+  display: flex;
+  flex-direction: column;
+  background-color: rgb(255, 255, 255);
+  color: rgb(18, 22, 25);
+  box-shadow:
+    0px 0px 1px 0px rgba(52, 58, 63, 0.1),
+    0px 1px 5px 0px rgba(52, 58, 63, 0.1);
+  position: relative;
+  height: fit-content;
+  transition: box-shadow 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.info-outer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+}
+.info-upper {
+  display: flex;
+  flex-direction: row;
+  -webkit-box-pack: justify;
+  justify-content: space-between;
+  -webkit-box-align: center;
+  align-items: center;
+}
+.info-status {
+  max-width: 100%;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol";
+  font-size: 1.1375rem;
+  display: inline-flex;
+  -webkit-box-align: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  justify-content: center;
+  line-height: 1.5;
+  color: rgb(18, 22, 25);
+  cursor: unset;
+  vertical-align: middle;
+  box-sizing: border-box;
+  height: 24px;
+  background-color: rgba(182, 187, 191, 0.25);
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background-color 300ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  outline: 0px;
+  text-decoration: none;
+  border-width: 0px;
+  border-style: initial;
+  border-color: initial;
+  border-image: initial;
+  padding: 0px;
+  border-radius: 4px;
+}
+.info-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.info-status span .info-chip {
+  display: flex;
+  flex-direction: row;
+  -webkit-box-align: center;
+  align-items: center;
+  gap: 8px;
+}
+.lower-info {
+  display: flex;
+  flex-direction: row;
+  -webkit-box-pack: justify;
+  justify-content: space-between;
+  -webkit-box-align: center;
+  align-items: center;
+}
+.lower-info-wrap {
+  position: relative;
+  width: 100%;
+}
+.template-info {
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  position: relative;
+  top: 0px;
+  left: 0px;
+  width: 100%;
+}
+.template-info p {
+  margin: 0px;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol";
+  font-size: 1.4rem;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.template-details {
+  margin: 0px;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol";
+  font-weight: 400;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(77, 83, 88);
+  font-size: 1.2rem;
+}
+.iframe-reload-btn {
+  display: inline-flex;
+  -webkit-box-align: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  justify-content: center;
+  position: relative;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  background-color: transparent;
+  cursor: pointer;
+  user-select: none;
+  vertical-align: middle;
+  appearance: none;
+  text-align: center;
+  font-size: 2.1rem;
+  color: rgba(0, 0, 0, 0.54);
+  --IconButton-hoverBg: rgba(0, 0, 0, 0.04);
+  outline: 0px;
+  border-width: 0px;
+  border-style: initial;
+  border-color: initial;
+  border-image: initial;
+  margin: 0px;
+  text-decoration: none;
+  flex: 0 0 auto;
+  padding: 8px;
+  transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 6px;
+}
+.iframe-reload-btn:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+.preview-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  justify-content: safe center;
+  overflow: scroll;
+  width: 100%;
+  height: 100%;
+}
+.custom-view-btn {
+  display: inline-flex;
+  -webkit-box-align: center;
+  align-items: center;
+  -webkit-box-pack: center;
+  justify-content: center;
+  position: relative;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  background-color: transparent;
+  outline: 0px;
+  margin: 0px;
+  cursor: pointer;
+  user-select: none;
+  vertical-align: middle;
+  appearance: none;
+  text-decoration: none;
+  font-size: inherit;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif,
+    "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Segoe UI Symbol";
+  font-weight: 500;
+  line-height: 1.75;
+  border-radius: 6px;
+  border-top-left-radius: 0px;
+  border-bottom-left-radius: 0px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  color: rgba(0, 0, 0, 0.54);
+  text-transform: none;
+  white-space: nowrap;
+  padding: 10px;
+}
+.before-custom-btn,
+.MuiToggleButtonGroup-root > button:nth-child(3) {
+  border-top-right-radius: 0px !important;
+  border-bottom-right-radius: 0px !important;
+}
+.custom-view-btn:hover {
+  text-decoration: none;
+  background-color: rgba(18, 22, 25, 0.04);
+}
+.custom-view-btn.btn-active {
+  color: rgb(0, 20, 204);
+  background-color: rgb(224, 235, 255);
+  border-color: rgb(0, 20, 204) !important;
 }
