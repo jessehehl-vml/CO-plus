@@ -351,10 +351,11 @@ async function extractVariantsFromPreview() {
     const parentLi = node.closest("li");
     if (!parentLi) continue;
 
-    if (parentLi.getAttribute("aria-expanded") === "false") {
+    // auto open lis
+    /*if (parentLi.getAttribute("aria-expanded") === "false") {
       node.click();
       await new Promise((r) => setTimeout(r, 200));
-    }
+    } */
 
     const sizeEls = parentLi.querySelectorAll(
       ':scope ul [data-testid^="variant-tree-item-"]',
