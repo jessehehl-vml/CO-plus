@@ -41,7 +41,7 @@ Follow these steps to install the extension in Chrome:
 - Open the side panel by clicking the extension’s icon.
 - Use the switches to turn on/off features like:
   - **Screenshots**
-  - **Videos**
+  - **Download**
   - **Auto‑map**
   - **Assets (ZIP/CSV)**
   - **Individual Reload**
@@ -86,14 +86,15 @@ When a new version is released:
 
 ---
 
-### 2. Bulk video downloader
+### 2. Bulk ad downloader
 
 **Main Function:**
 
-- `Download videos` – Fetches all video creatives for current adset at chosen quality, zips, and downloads.
+- `Download ads` – Fetches all meta or video creatives for current adset at chosen quality, zips, and downloads.
 
 **Details:**
 
+- Works with both images and video adsets.
 - Picks best matching VAST video component based on the quality selected in the side panel.
 - Progress and cancellation via side panel.
 

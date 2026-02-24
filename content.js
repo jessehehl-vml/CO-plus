@@ -714,8 +714,45 @@ function pickBestVideoComponentKey(components, videoQuality) {
       .sort((a, b) => b.kbps - a.kbps)[0]?.key ?? null
   );
 }
+async function collectMediaForMeta(adVariantsData) {
+  const mediaFiles = [];
 
+  for (const item of adVariantsData) {
+    const contentId = item?.data?.["content-id"];
+    const variants = item?.data?.["ad-variants"] || [];
+
+    for (const variant of variants) {
+      const components = variant?.components || {};
+
+      // Prefer video if available
+      const videoComp = components["urn:meta:single-video"];
+      if (videoComp?.value) {
+        const meta = videoComp.metadata || {};
+        const w = meta.width ?? variant.dimensions?.width;
+        const h = meta.height ?? variant.dimensions?.height;
+        const fileName = `${contentId}_${w}x${h}.mp4`;
+
+        mediaFiles.push({ url: videoComp.value, fileName });
+        continue; // skip image if we got a video
+      }
+
+      // Otherwise, use single-image
+      const imgComp = components["urn:meta:single-image"];
+      if (imgComp?.value) {
+        const meta = imgComp.metadata || {};
+        const ext = meta["mime-type"] === "image/png" ? "png" : "jpg";
+        const w = meta.width ?? variant.dimensions?.width;
+        const h = meta.height ?? variant.dimensions?.height;
+        const fileName = `${contentId}_${w}x${h}.${ext}`;
+
+        mediaFiles.push({ url: imgComp.value, fileName });
+      }
+    }
+  }
+  return mediaFiles;
+}
 async function collectVideoFilesForQuality(adVariantsData, videoQuality) {
+  console.log(adVariantsData);
   const videoFiles = [];
   const usedKeys = new Map();
   let missingKeyCount = 0;
@@ -852,69 +889,62 @@ async function zipAndDownloadVideos(videoFiles, runId) {
 }
 
 // 6.4 Core Video Download
-async function downloadVideos() {
+async function downloadVideos(channel) {
   state.cancelVideos = false;
 
   const { videosEnabled, videoQuality } = await getVideoSettings();
   if (!videosEnabled) return;
 
-  // Fetch variants
   let adVariantsData;
   try {
     adVariantsData = await fetchAdVariants();
   } catch (err) {
-    reportVideoError(err?.message || String(err), {
-      phase: "fetchAdVariants",
-      stack: err?.stack,
-    });
+    reportVideoError(err?.message || String(err), { phase: "fetchAdVariants" });
     return;
   }
 
-  if (!Array.isArray(adVariantsData) || adVariantsData.length === 0) {
-    reportVideoError(
-      "Failed to fetch ad variants (empty result). Check token/network and refresh the page.",
-      { phase: "fetchAdVariants", returnedLength: adVariantsData?.length },
-    );
+  if (!Array.isArray(adVariantsData) || !adVariantsData.length) {
+    reportVideoError("No ad variants found", { phase: "fetchAdVariants" });
     return;
   }
 
-  // Collect urls
-  const { videoFiles, missingKeyCount, usedKeys } =
-    await collectVideoFilesForQuality(adVariantsData, videoQuality);
-
-  if (!videoFiles.length) {
-    reportVideoError(`No videos found for quality "${videoQuality}".`, {
-      phase: "collect",
+  let mediaFiles;
+  if (channel === "meta") {
+    // Smart meta media collection
+    mediaFiles = await collectMediaForMeta(adVariantsData);
+  } else {
+    // Normal video collection
+    const { videoFiles } = await collectVideoFilesForQuality(
+      adVariantsData,
       videoQuality,
-      missingKeyCount,
-      usedKeys,
+    );
+    mediaFiles = videoFiles;
+  }
+
+  if (!mediaFiles.length) {
+    reportVideoError(`No ${channel === "meta" ? "media" : "videos"} found.`, {
+      phase: "collect",
     });
     return;
   }
 
-  // Init progress
   let runId;
   try {
-    runId = await initVideoProgress(videoFiles.length);
+    runId = await initVideoProgress(mediaFiles.length);
   } catch (err) {
     reportVideoError(
-      `Failed to init video progress: ${err?.message || String(err)}`,
-      {
-        phase: "initVideoProgress",
-        stack: err?.stack,
-      },
+      `Failed to init progress: ${err?.message || String(err)}`,
+      { phase: "initVideoProgress" },
     );
     return;
   }
 
-  // Zip + download
   try {
-    await zipAndDownloadVideos(videoFiles, runId);
+    await zipAndDownloadVideos(mediaFiles, runId); // works for both mp4 and img
     chrome.runtime.sendMessage({ action: "videoFinished", runId });
   } catch (err) {
     reportVideoError(err?.message || String(err), {
       phase: "zipAndDownloadVideos",
-      stack: err?.stack,
     });
   }
 }
@@ -2386,15 +2416,14 @@ async function injectButtons() {
       } catch {}
     }
 
-    if (adsetData?.channel === "video") {
+    if (adsetData?.channel === "video" || adsetData?.channel === "meta") {
       ensureButton({
         id: "download-videos-btn",
         parent: adVariantsButton.parentNode,
         afterElement: adVariantsButton,
-        className:
-          "MuiButtonBase-root MuiButton-root MuiButton-outlined MuiButton-outlinedPrimary MuiButton-sizeMedium MuiButton-outlinedSizeMedium MuiButton-colorPrimary css-x5x149",
-        text: `<span class="material-icons notranslate MuiIcon-root MuiIcon-colorDefault MuiIcon-fontSizeMedium css-cveorv" aria-hidden="true">cloud_download</span>Download Videos`,
-        onClick: downloadVideos, // Section 6
+        className: "download-ads-btn",
+        text: `<span class="material-icons" aria-hidden="true">cloud_download</span>Download ads`,
+        onClick: () => downloadVideos(adsetData.channel),
       });
     } else {
       document.getElementById("download-videos-btn")?.remove();
