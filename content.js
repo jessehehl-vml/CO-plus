@@ -77,7 +77,7 @@ const RE = {
   adVariantsPage:
     /^https:\/\/create\.choreograph\.com\/\d+\/advertiser\/\d+\/campaign\/\d+\/adset\/\d+\/ad-variants/,
   assetsPage:
-    /^https:\/\/create\.choreograph\.com\/\d+\/advertiser\/\d+\/assets\?node=\d+/,
+    /^https:\/\/create\.choreograph\.com\/\d+\/advertiser\/\d+\/assets/,
 };
 
 const SEL = {
@@ -752,7 +752,6 @@ async function collectMediaForMeta(adVariantsData) {
   return mediaFiles;
 }
 async function collectVideoFilesForQuality(adVariantsData, videoQuality) {
-  console.log(adVariantsData);
   const videoFiles = [];
   const usedKeys = new Map();
   let missingKeyCount = 0;
