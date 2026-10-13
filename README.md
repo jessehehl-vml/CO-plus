@@ -10,7 +10,7 @@ Follow these steps to install the extension in Chrome:
 
 ### 1. Download the Extension ZIP
 
-- Click the download link: **[Download Extension ZIP](https://gitlab.com/jessehehl/creative-optimizations-plus/-/archive/main/creative-optimizations-plus-main.zip?ref_type=heads)**.
+- Click the download link: **[Download Extension ZIP](https://github.com/jessehehl-vml/CO-plus/archive/refs/heads/main.zip)**.
 - Save the file somewhere easy to find (like your Desktop).
 
 ### 2. Unzip the File
