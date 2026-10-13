@@ -18,8 +18,14 @@
 // =========================
 // 1) Globals / constants
 // =========================
-const session = JSON.parse(localStorage.getItem("session") || "{}");
-const accessToken = session.token; // string | undefined
+// Read on every call: the app refreshes the token, so a value cached at load goes stale (401)
+function getAccessToken() {
+  try {
+    return JSON.parse(localStorage.getItem("session") || "{}").token;
+  } catch {
+    return undefined;
+  }
+}
 let adsetData = null; // filled later by fetchAdsetData()
 
 // Tool options
@@ -27,6 +33,7 @@ const STORAGE_DEFAULTS = {
   delay: 500,
   scale: 2,
   imageType: "png", // "png" | "jpeg"
+  screenshotFrames: [], // frame numbers to capture; [] = single capture after the delay
   screenshotsEnabled: true,
 
   videoQuality: "1080p", // "1080p" | "720p" | "480p" | "270p"
@@ -96,13 +103,21 @@ function storageSet(values) {
   return new Promise((resolve) => chrome.storage.sync.set(values, resolve));
 }
 async function getScreenshotSettings() {
-  const { delay, scale, imageType, screenshotsEnabled } = await storageGet({
-    delay: STORAGE_DEFAULTS.delay,
-    scale: STORAGE_DEFAULTS.scale,
-    imageType: STORAGE_DEFAULTS.imageType,
-    screenshotsEnabled: STORAGE_DEFAULTS.screenshotsEnabled,
-  });
-  return { delay, scale, imageType, screenshotsEnabled };
+  const { delay, scale, imageType, screenshotsEnabled, screenshotFrames } =
+    await storageGet({
+      delay: STORAGE_DEFAULTS.delay,
+      scale: STORAGE_DEFAULTS.scale,
+      imageType: STORAGE_DEFAULTS.imageType,
+      screenshotsEnabled: STORAGE_DEFAULTS.screenshotsEnabled,
+      screenshotFrames: STORAGE_DEFAULTS.screenshotFrames,
+    });
+  return {
+    delay,
+    scale,
+    imageType,
+    screenshotsEnabled,
+    screenshotFrames: Array.isArray(screenshotFrames) ? screenshotFrames : [],
+  };
 }
 
 async function getVideoSettings() {
@@ -143,9 +158,37 @@ function runtimeSend(msg) {
   });
 }
 
+function showToast(message) {
+  document.getElementById("co-plus-toast")?.remove();
+  const toast = document.createElement("div");
+  toast.id = "co-plus-toast";
+  toast.textContent = message;
+  Object.assign(toast.style, {
+    position: "fixed",
+    bottom: "24px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    maxWidth: "70vw",
+    padding: "10px 16px",
+    background: "#b3261e",
+    color: "#fff",
+    borderRadius: "8px",
+    font: "14px sans-serif",
+    zIndex: "2147483647",
+    boxShadow: "0 2px 8px rgba(0,0,0,.3)",
+  });
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 8000);
+}
+
 function reportScreenshotError(message, details = {}) {
   console.error("[screenshots]", message, details);
-  chrome.runtime.sendMessage({ action: "screenshotError", message, details });
+  showToast(`Screenshot failed: ${message}`);
+  try {
+    chrome.runtime.sendMessage({ action: "screenshotError", message, details });
+  } catch (err) {
+    console.warn("[screenshots] could not notify the extension", err);
+  }
 }
 function reportVideoError(message, details = {}) {
   console.error("[videos]", message, details);
@@ -181,25 +224,72 @@ function getIdsFromUrl() {
   return { agencyId, advertiserId, campaignId, adsetId };
 }
 
-async function apiFetch(url, { method = "GET", headers = {}, body } = {}) {
-  if (!accessToken) throw new Error("Access token not available");
+function isTokenExpired(token, skewSeconds = 30) {
+  try {
+    const payload = JSON.parse(
+      atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")),
+    );
+    return typeof payload.exp === "number"
+      ? payload.exp * 1000 - skewSeconds * 1000 < Date.now()
+      : false;
+  } catch {
+    return false; // not a decodable JWT: let the server decide
+  }
+}
 
-  const res = await fetch(url, {
-    method,
-    headers: {
-      Accept: "application/json",
-      ...headers,
-      Authorization: `lemonpi ${accessToken}`,
-    },
-    body,
-  });
+// The most reliable token is the one the app itself last sent from this tab (recorded by page-auth.js).
+// localStorage is shared by every Choreograph window, so its session can belong to another advertiser
+// (403) or have been refreshed since this page loaded (401): those are only fallbacks.
+let lastGoodAuth = null;
+
+function getAuthCandidates() {
+  const fromPage = document.documentElement.getAttribute("data-co-plus-auth");
+  const stored = getAccessToken();
+  return [
+    ...new Set(
+      [fromPage, lastGoodAuth, stored && `lemonpi ${stored}`].filter(Boolean),
+    ),
+  ];
+}
+
+async function apiFetch(url, { method = "GET", headers = {}, body } = {}) {
+  const candidates = getAuthCandidates();
+  if (!candidates.length) throw new Error("Access token not available");
+
+  let res;
+  let usedAuth;
+  for (const auth of candidates) {
+    usedAuth = auth;
+    res = await fetch(url, {
+      method,
+      headers: {
+        Accept: "application/json",
+        ...headers,
+        Authorization: auth,
+      },
+      body,
+    });
+    if (res.status !== 401 && res.status !== 403) break;
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
+    if (res.status === 401 && isTokenExpired(usedAuth.split(/\s+/).pop(), 0)) {
+      throw new Error(
+        "Your Choreograph session has expired. Reload the page (or log in again) and retry.",
+      );
+    }
+    if (res.status === 403 && text.includes("no-permission-for-advertiser")) {
+      throw new Error(
+        "This tab's session no longer matches its advertiser (another Choreograph window changed the login). Reload this page and retry.",
+      );
+    }
     throw new Error(
       `HTTP ${res.status} ${res.statusText} - ${text.slice(0, 300)}`,
     );
   }
+
+  lastGoodAuth = usedAuth;
   return res;
 }
 
@@ -423,12 +513,13 @@ function buildAdBlob(renderData) {
   return URL.createObjectURL(new Blob([html], { type: "text/html" }));
 }
 
-// 5.4 Core Capture
-async function takeScreenshot(match, ctx) {
-  if (!match) throw new Error("No matching ad variant found");
+// 5.4 Frame detection (GSAP "frameN-preview" labels, read in a hidden tab)
+const frameCache = new Map(); // `${adsetId}:${WxH}` -> number[] (empty = creative has no frame labels)
+let frameInfoCache = null; // { adsetId, sizes: { "300x250": [1, 2, 3] } }
+let frameInfoInflight = null;
 
-  const variantsList = match.data?.["ad-variants"] || [];
-  const variant = variantsList.find((v) =>
+function getRenderData(match, ctx) {
+  const variant = (match?.data?.["ad-variants"] || []).find((v) =>
     v["ad-formats"]?.some(
       (f) => f.width === ctx.width && f.height === ctx.height,
     ),
@@ -440,8 +531,179 @@ async function takeScreenshot(match, ctx) {
     variant.components?.["urn:lemonpi:artefact:display:content+template"]
       ?.value;
   if (!renderData) throw new Error("Render data missing");
+  return renderData;
+}
 
-  const { scale, imageType } = await getScreenshotSettings();
+function collectUrls(value, out = []) {
+  if (typeof value === "string") {
+    if (/^https?:\/\//.test(value)) out.push(value);
+  } else if (value && typeof value === "object") {
+    Object.values(value).forEach((v) => collectUrls(v, out));
+  }
+  return out;
+}
+
+const templateFrameCache = new Map(); // template URLs -> { frames, complete } from the static scan
+
+// Fast path: read the frame labels straight from the template's source, no rendering needed
+async function scanFramesStatically(renderData) {
+  const urls = [...new Set(collectUrls(renderData.template))];
+  if (!urls.length) {
+    console.info("[frames] no URLs in template data", renderData.template);
+    return { frames: [], complete: false };
+  }
+
+  const key = urls.join("|");
+  if (templateFrameCache.has(key)) return templateFrameCache.get(key);
+
+  const resp = await runtimeSend({
+    action: "scanTemplateFrames",
+    payload: { urls },
+  });
+  const result = resp?.success
+    ? { frames: resp.frames, complete: !!resp.complete }
+    : { frames: [], complete: false };
+  if (!result.frames.length)
+    console.info("[frames] static scan found nothing", urls, resp);
+  templateFrameCache.set(key, result);
+  return result;
+}
+
+const frameInflight = new Map(); // key -> Promise, so a click joins a detection already running
+
+function getSizeFrames(match, ctx) {
+  const adsetId = getIdsFromUrl()?.adsetId;
+  const key = `${adsetId}:${ctx.width}x${ctx.height}`;
+  if (frameCache.has(key)) return Promise.resolve(frameCache.get(key));
+  if (frameInflight.has(key)) return frameInflight.get(key);
+
+  const promise = detectSizeFrames(match, ctx, key).finally(() =>
+    frameInflight.delete(key),
+  );
+  frameInflight.set(key, promise);
+  return promise;
+}
+
+async function detectSizeFrames(match, ctx, key) {
+  const renderData = getRenderData(match, ctx);
+
+  try {
+    const { frames, complete } = await scanFramesStatically(renderData);
+    // A fully read template with no labels has no frames: no need to render it to find out
+    if (frames.length || complete) {
+      frameCache.set(key, frames);
+      return frames;
+    }
+  } catch (err) {
+    console.warn("[frames] static scan failed, falling back to render", err);
+  }
+
+  // Fallback: render the creative in a hidden tab/popup and read its live timeline
+  const blobUrl = buildAdBlob(renderData);
+  try {
+    const resp = await runtimeSend({
+      action: "probeFrames",
+      payload: { blobUrl },
+    });
+    if (!resp?.success)
+      throw new Error(resp?.error || "Frame detection failed");
+    if (!resp.frames.length)
+      console.warn("[frames] none found for", key, resp.debug);
+    frameCache.set(key, resp.frames);
+    return resp.frames;
+  } finally {
+    URL.revokeObjectURL(blobUrl);
+  }
+}
+
+// Frames to capture for this size: [] means no labels / nothing selected -> plain delayed capture
+async function resolveFrames(match, ctx, selected) {
+  if (!selected.length) return { legacy: true, frames: [] };
+  const available = await getSizeFrames(match, ctx);
+  if (!available.length) return { legacy: true, frames: [] };
+  return {
+    legacy: false,
+    frames: selected.filter((f) => available.includes(f)),
+    available,
+  };
+}
+
+// Detects frames for every size in the adset (frames are the same across variants, not across sizes)
+function detectAllFrames({ force = false } = {}) {
+  const ids = getIdsFromUrl();
+  if (!ids) {
+    return Promise.reject(new Error("Open an adset's ad-variants page."));
+  }
+  if (!force && frameInfoCache?.adsetId === ids.adsetId) {
+    return Promise.resolve(frameInfoCache);
+  }
+  if (frameInfoInflight) return frameInfoInflight;
+
+  frameInfoInflight = (async () => {
+    if (force) {
+      for (const k of [...frameCache.keys()]) {
+        if (k.startsWith(`${ids.adsetId}:`)) frameCache.delete(k);
+      }
+    }
+
+    const variants = await fetchAdVariants();
+    const bySize = new Map();
+    for (const match of variants) {
+      for (const av of match.data?.["ad-variants"] || []) {
+        for (const f of av["ad-formats"] || []) {
+          const size = `${f.width}x${f.height}`;
+          if (!bySize.has(size))
+            bySize.set(size, {
+              match,
+              ctx: { width: f.width, height: f.height },
+            });
+        }
+      }
+    }
+
+    const sizes = {};
+    const queue = [...bySize];
+    const worker = async () => {
+      while (queue.length) {
+        const [size, { match, ctx }] = queue.shift();
+        try {
+          sizes[size] = await getSizeFrames(match, ctx);
+        } catch (err) {
+          console.warn("[frames] detection failed for", size, err);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: 3 }, worker)); // a few sizes at a time
+
+    frameInfoCache = { adsetId: ids.adsetId, sizes };
+    return frameInfoCache;
+  })().finally(() => {
+    frameInfoInflight = null;
+  });
+
+  return frameInfoInflight;
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.action !== "getFrameInfo") return;
+  detectAllFrames({ force: !!msg.force })
+    .then((info) => sendResponse({ success: true, sizes: info.sizes }))
+    .catch((err) =>
+      sendResponse({ success: false, error: err?.message || String(err) }),
+    );
+  return true;
+});
+
+// 5.5 Core Capture
+// Returns one entry per captured frame: [{ blob, safeVariantName, sizeString, frame }]
+async function takeScreenshots(match, ctx) {
+  if (!match) throw new Error("No matching ad variant found");
+
+  const renderData = getRenderData(match, ctx);
+  const { scale, imageType, screenshotFrames } = await getScreenshotSettings();
+  const { legacy, frames } = await resolveFrames(match, ctx, screenshotFrames);
+  if (!legacy && frames.length === 0) return []; // none of the selected frames exist at this size
+
   const mime =
     imageType === "jpeg" || imageType === "jpg" ? "image/jpeg" : "image/png";
   const safeName = sanitizeName(
@@ -450,17 +712,8 @@ async function takeScreenshot(match, ctx) {
   const sizeString = `${ctx.width}x${ctx.height}`;
   const blobUrl = buildAdBlob(renderData);
 
-  try {
-    const { success, dataUrl, base64, error, cancelled } = await runtimeSend({
-      action: "captureAdBlob",
-      payload: { blobUrl },
-    });
-    if (!success)
-      throw new Error(error || (cancelled ? "Cancelled" : "Capture failed"));
-
-    const url = dataUrl || `data:${mime};base64,${base64}`;
-
-    return await new Promise((resolve, reject) => {
+  const toBlob = (url, factor) =>
+    new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
         const canvas = Object.assign(document.createElement("canvas"), {
@@ -469,13 +722,14 @@ async function takeScreenshot(match, ctx) {
         });
         const ctx2d = canvas.getContext("2d");
         if (!ctx2d) return reject(new Error("No canvas context"));
+        ctx2d.imageSmoothingQuality = "high";
 
         ctx2d.drawImage(
           img,
           0,
           0,
-          ctx.width * scale,
-          ctx.height * scale, // source crop
+          ctx.width * factor,
+          ctx.height * factor, // source crop: the ad as rendered, whatever the display's pixel ratio
           0,
           0,
           ctx.width * scale,
@@ -483,10 +737,8 @@ async function takeScreenshot(match, ctx) {
         );
 
         canvas.toBlob(
-          (blob) => {
-            if (!blob) return reject(new Error("Failed to create blob"));
-            resolve({ blob, safeVariantName: safeName, sizeString });
-          },
+          (blob) =>
+            blob ? resolve(blob) : reject(new Error("Failed to create blob")),
           mime,
           1,
         );
@@ -494,11 +746,36 @@ async function takeScreenshot(match, ctx) {
       img.onerror = () => reject(new Error("Image decode failed"));
       img.src = url;
     });
+
+  try {
+    const { success, shots, error, cancelled } = await runtimeSend({
+      action: "captureAdBlob",
+      payload: { blobUrl, frames },
+    });
+    if (!success)
+      throw new Error(error || (cancelled ? "Cancelled" : "Capture failed"));
+
+    const results = [];
+    for (const shot of shots) {
+      results.push({
+        blob: await toBlob(shot.dataUrl, shot.factor || scale),
+        safeVariantName: safeName,
+        sizeString,
+        frame: shot.frame,
+      });
+    }
+    return results;
   } finally {
     try {
       URL.revokeObjectURL(blobUrl);
     } catch {}
   }
+}
+
+function screenshotFileName(shot) {
+  const ext = shot.blob.type.split("/")[1] || "png";
+  const frame = shot.frame != null ? `_frame${shot.frame}` : "";
+  return `${shot.safeVariantName}_${shot.sizeString}${frame}.${ext}`;
 }
 
 // 5.5 Bulk screenshot entrypoint
@@ -552,19 +829,50 @@ async function screenshotAll() {
     return;
   }
 
-  const total = previewVariants.reduce(
-    (sum, item) => sum + (item.sizes?.length || 0),
-    0,
-  );
+  const merged = mergeComponents(variants, previewVariants);
+  const { screenshotFrames } = await getScreenshotSettings();
+
+  // Shots expected per variant/size: selected frames that exist at that size, else a single capture
+  const expected = new Map(); // `${variant}|${size}` -> count
+  let total = 0;
+  for (const pv of previewVariants) {
+    for (const size of pv.sizes || []) {
+      let count = 1;
+      const component = merged[pv.variant];
+      if (component && screenshotFrames.length) {
+        try {
+          const [width, height] = size.split("x").map(Number);
+          const { legacy, frames } = await resolveFrames(
+            component,
+            { width, height },
+            screenshotFrames,
+          );
+          count = legacy ? 1 : frames.length;
+        } catch (err) {
+          console.warn(
+            "[frames] could not resolve frames",
+            pv.variant,
+            size,
+            err,
+          );
+        }
+      }
+      expected.set(`${pv.variant}|${size}`, count);
+      total += count;
+    }
+  }
+
+  if (state.cancelScreenshots) return;
+
   if (!total) {
-    reportScreenshotError("No sizes selected (0 screenshots).", {
-      phase: "count",
-    });
+    reportScreenshotError(
+      "Nothing to screenshot: no sizes selected, or the selected frames don't exist at the selected sizes.",
+      { phase: "count", screenshotFrames },
+    );
     return;
   }
 
   // 3) Run
-  const merged = mergeComponents(variants, previewVariants);
   const zip = new window.JSZip();
   let filesAdded = 0;
 
@@ -578,30 +886,27 @@ async function screenshotAll() {
 
     // if missing component, still increment progress for the sizes so UI doesn't freeze
     if (!component) {
-      x;
-      for (let i = 0; i < sizes.length; i++) incScreenshotProgress();
+      for (const size of sizes) {
+        for (let i = 0; i < expected.get(`${pv.variant}|${size}`); i++)
+          incScreenshotProgress();
+      }
       continue;
     }
 
     for (const size of sizes) {
-      console.log(state.cancelScreenshots);
       if (state.cancelScreenshots) return;
 
       const [width, height] = size.split("x").map(Number);
 
       try {
-        const result = await takeScreenshot(component, {
+        const results = await takeScreenshots(component, {
           width,
           height,
           contentId: pv.variant,
         });
 
-        if (result?.blob) {
-          const ext = result.blob.type.split("/")[1] || "png";
-          zip.file(
-            `${result.safeVariantName}_${result.sizeString}.${ext}`,
-            result.blob,
-          );
+        for (const result of results) {
+          zip.file(screenshotFileName(result), result.blob);
           filesAdded++;
         }
       } catch (err) {
@@ -615,7 +920,10 @@ async function screenshotAll() {
           { phase: "takeScreenshot" },
         );
       } finally {
-        if (!state.cancelScreenshots) incScreenshotProgress();
+        if (!state.cancelScreenshots) {
+          for (let i = 0; i < expected.get(`${pv.variant}|${size}`); i++)
+            incScreenshotProgress();
+        }
       }
     }
   }
@@ -1150,7 +1458,8 @@ function extractTargetingValues(adVariants) {
 }
 
 async function updateTargetingConfig(mappings) {
-  if (!accessToken) throw new Error("Access token not available");
+  if (!getAuthCandidates().length)
+    throw new Error("Access token not available");
   if (!adsetData?.advertiserId || !adsetData?.id) {
     throw new Error("adsetData missing advertiserId or adset id");
   }
@@ -2283,6 +2592,10 @@ async function updateScreenshotBtnCount() {
   );
   if (seq !== screenshotUI.seq) return;
 
+  // Only touch the DOM when the count changed: rewriting the button is itself a mutation that
+  // re-triggers this updater, and replacing the icon between mousedown and mouseup swallows the click
+  if (btn.dataset.count === String(total)) return;
+  btn.dataset.count = String(total);
   btn.innerHTML = `<span class="material-icons camera-icon">camera_alt</span> ${total}`;
   btn.disabled = total === 0;
 }
@@ -2511,7 +2824,13 @@ async function injectIframeButtons() {
       shotBtn.style.marginLeft = "4px";
       shotBtn.innerHTML = `<span class="material-icons">camera_alt</span><span class="MuiTouchRipple-root css-4mb1j7"></span>`;
 
-      shotBtn.addEventListener("click", async () => {
+      const runShot = async () => {
+        if (shotBtn.dataset.busy) return; // ignore repeat clicks while a capture is running
+        shotBtn.dataset.busy = "1";
+        shotBtn.style.opacity = "0.5";
+        const icon = shotBtn.querySelector(".material-icons");
+        if (icon) icon.textContent = "hourglass_top";
+
         try {
           const ctx = getIframeContext(container);
           if (!ctx) {
@@ -2536,15 +2855,29 @@ async function injectIframeButtons() {
             variants.find(
               (v) => v?.data?.["content-id"]?.trim() === ctx.contentId,
             ) || null;
-          const result = await takeScreenshot(match, ctx);
-          if (!result?.blob) return;
+          const results = await takeScreenshots(match, ctx);
+          if (!results.length) {
+            reportScreenshotError(
+              `None of the selected frames exist at ${ctx.width}x${ctx.height}.`,
+              { phase: "iframeSingleScreenshot" },
+            );
+            return;
+          }
 
-          const url = URL.createObjectURL(result.blob);
-          const ext = result.blob.type.split("/")[1] || "png";
+          // Several frames are bundled so the browser doesn't prompt for multiple downloads
+          let fileBlob = results[0].blob;
+          let fileName = screenshotFileName(results[0]);
+          if (results.length > 1) {
+            const zip = new window.JSZip();
+            results.forEach((r) => zip.file(screenshotFileName(r), r.blob));
+            fileBlob = await zip.generateAsync({ type: "blob" });
+            fileName = `${results[0].safeVariantName}_${results[0].sizeString}_frames.zip`;
+          }
 
+          const url = URL.createObjectURL(fileBlob);
           const a = document.createElement("a");
           a.href = url;
-          a.download = `${result.safeVariantName}_${result.sizeString}.${ext}`;
+          a.download = fileName;
           document.body.appendChild(a);
           a.click();
           a.remove();
@@ -2555,7 +2888,17 @@ async function injectIframeButtons() {
             phase: "iframeSingleScreenshot",
             stack: err?.stack,
           });
+        } finally {
+          delete shotBtn.dataset.busy;
+          shotBtn.style.opacity = "";
+          if (icon) icon.textContent = "camera_alt";
         }
+      };
+
+      // Presses are handled by the window-level listener below; click only covers keyboard activation
+      shotBtn._run = runShot;
+      shotBtn.addEventListener("click", () => {
+        if (Date.now() - (shotBtn._lastPress || 0) > 1000) runShot();
       });
 
       // Insert screenshot button after the reload button (if present) or readyChip
@@ -2590,6 +2933,23 @@ const scheduleInject = debounce(
   },
   500,
   2000,
+);
+
+// Start screenshots on press, at window level and by pointer position. The page re-renders its
+// cards and can overlay them, so the press may not target the button (or the button may be swapped
+// before the click completes).
+window.addEventListener(
+  "pointerdown",
+  (e) => {
+    if (e.button !== 0) return;
+    const btn = document
+      .elementsFromPoint(e.clientX, e.clientY)
+      .find((el) => el.classList?.contains("iframe-screenshot-btn"));
+    if (!btn?._run) return;
+    btn._lastPress = Date.now();
+    btn._run();
+  },
+  true,
 );
 
 // DOM changes (SPA + MUI rerenders)

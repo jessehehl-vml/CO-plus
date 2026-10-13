@@ -1,6 +1,6 @@
 {
   "name": "CO Plus",
-  "version": "1.0",
+  "version": "1.1",
   "description": "This Chrome Extension content script adds tools and features to Choreograph Creative Optimizations, settings can be changed via the side panel.",
   "manifest_version": 3,
   "action": {
@@ -13,6 +13,12 @@
     "128": "icons/icon128.png"
   },
   "content_scripts": [
+    {
+      "matches": ["https://create.choreograph.com/*"],
+      "js": ["page-auth.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": ["https://create.choreograph.com/*"],
       "css": ["style.css"],

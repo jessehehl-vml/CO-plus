@@ -82,6 +82,7 @@ When a new version is released:
 - Captures rendered ads via background script and saves as PNG/JPEG.
 - Progress shown in side panel.
 - Option to delay the capture to wait for animations to play.
+- Frame capture: for creatives that expose GSAP `frameN-preview` labels on `Creative.timeline`, the side panel detects the available frames per size (in a hidden background tab) and lets you pick which to capture. Frames are captured instantly, without the delay, and named `<variant>_<size>_frame<N>`. Creatives without labels, or with no frames selected, use the delayed single capture. Multiple frames from the single-ad button are downloaded as a ZIP.
 - Option to double the dimensions of the ad for higher resolution images.
 
 ---

@@ -6,6 +6,7 @@ const DEFAULTS = {
   delay: 500,
   scale: 2,
   imageType: "png",
+  screenshotFrames: [],
   screenshotsEnabled: true,
 
   // videos
@@ -47,6 +48,11 @@ const els = {
   sImageType: document.getElementById("imageType"),
   sSave: document.getElementById("save"),
   sSaveStatus: document.getElementById("status"),
+
+  // screenshots: frames
+  fStatus: document.getElementById("frameStatus"),
+  fChoices: document.getElementById("frameChoices"),
+  fRefresh: document.getElementById("frameRefresh"),
 
   // videos: progress
   vBar: document.getElementById("videoProgressBar"),
@@ -277,7 +283,10 @@ function wireProgress() {
 // --------------------
 function wireSettings() {
   els.sSave?.addEventListener("click", () => {
-    const delay = parseInt(els.sDelay?.value ?? DEFAULTS.delay, 10);
+    const delay = parseInt(
+      els.sDelay?.dataset.value ?? els.sDelay?.value ?? DEFAULTS.delay,
+      10,
+    );
     const scale = parseFloat(els.sScale?.value ?? DEFAULTS.scale);
     const imageType = els.sImageType?.value ?? DEFAULTS.imageType;
 
@@ -297,6 +306,126 @@ function wireSettings() {
       setTimeout(() => (els.vSaveStatus.textContent = ""), 1200);
     });
   });
+}
+
+// --------------------
+// Frames (detected per size by the content script)
+// --------------------
+let frameRequestId = 0;
+
+function setFrameStatus(text, isError = false) {
+  els.fStatus.textContent = text;
+  els.fStatus.classList.toggle("errorText", isError);
+  els.fStatus.classList.toggle("hint", !isError);
+}
+let selectedFrames = [];
+let detectedMax = 0; // highest frame number found for the current page; 0 = none/unknown/detecting
+
+// The delay only applies to the single capture; frames are captured instantly
+function updateDelayState() {
+  const input = els.sDelay;
+  if (!input) return;
+  // Only disabled while the current page actually has frames that are selected
+  const off = selectedFrames.some((f) => f <= detectedMax);
+
+  // A number input can't show text, so it becomes a text field while disabled
+  if (off && input.type === "number") {
+    input.dataset.value = input.value;
+    input.type = "text";
+    input.value = `${input.dataset.value} (disabled)`;
+  } else if (!off && input.type === "text") {
+    input.type = "number";
+    input.value = input.dataset.value ?? input.value;
+    delete input.dataset.value;
+  }
+  input.disabled = off;
+  input.title = off ? "Not used while frames are selected" : "";
+}
+
+function renderFrames(sizes) {
+  const entries = Object.entries(sizes || {});
+  const max = Math.max(0, ...entries.map(([, frames]) => frames.length));
+  detectedMax = max;
+  updateDelayState();
+
+  els.fChoices.replaceChildren();
+  for (let n = 1; n <= max; n++) {
+    const label = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = String(n);
+    box.checked = selectedFrames.includes(n);
+    box.addEventListener("change", () => {
+      selectedFrames = [...els.fChoices.querySelectorAll("input:checked")].map(
+        (i) => Number(i.value),
+      );
+      chrome.storage.sync.set({ screenshotFrames: selectedFrames });
+      updateDelayState();
+    });
+    label.append(box, `Frame ${n}`);
+    els.fChoices.append(label);
+  }
+
+  setFrameStatus(
+    max
+      ? "Select the frames to capture:"
+      : "No frame labels found in these creatives.",
+  );
+}
+
+async function refreshFrames(force = false) {
+  // Only a Choreograph page can answer. The extension's own capture/probe tabs (blob: pages and
+  // popups) become the active tab while screenshots run, so they must not wipe the panel.
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  if (!/^https:\/\/create\.choreograph\.com\//.test(tab?.url || "")) {
+    if (frameRequestId === 0) {
+      setFrameStatus("Open an adset's ad-variants page to detect frames.");
+    }
+    return;
+  }
+
+  const requestId = ++frameRequestId;
+  setFrameStatus("Detecting frames…");
+  els.fChoices.replaceChildren();
+  detectedMax = 0;
+  updateDelayState();
+  const tabId = tab.id;
+
+  chrome.tabs.sendMessage(tabId, { action: "getFrameInfo", force }, (resp) => {
+    if (requestId !== frameRequestId) return; // a newer request superseded this one
+    if (chrome.runtime.lastError || !resp) {
+      setFrameStatus("Open an adset's ad-variants page to detect frames.");
+      return;
+    }
+    if (!resp.success) {
+      detectedMax = 0;
+      updateDelayState();
+      setFrameStatus(resp.error || "Frame detection failed.", true);
+      return;
+    }
+    renderFrames(resp.sizes);
+  });
+}
+
+function wireFrames() {
+  els.fRefresh?.addEventListener("click", () => refreshFrames(true));
+
+  const refresh = debounce(() => refreshFrames(false), 400);
+  chrome.tabs.onActivated.addListener(refresh);
+  chrome.tabs.onUpdated.addListener((_id, info, tab) => {
+    if (tab.active && (info.url || info.status === "complete")) refresh();
+  });
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
 }
 
 // --------------------
@@ -330,8 +459,15 @@ document.addEventListener("DOMContentLoaded", () => {
   wireProgress();
   wireSettings();
   wireCancel();
+  wireFrames();
 
   chrome.storage.sync.get(DEFAULTS, (settings) => {
+    selectedFrames = Array.isArray(settings.screenshotFrames)
+      ? settings.screenshotFrames
+      : [];
+    updateDelayState();
+    refreshFrames();
+
     // screenshots
     if (els.sDelay) els.sDelay.value = settings.delay;
     if (els.sScale) els.sScale.value = settings.scale;
