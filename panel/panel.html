@@ -10,15 +10,12 @@
     <button class="tab is-active" role="tab" aria-selected="true" aria-controls="tab-screenshot" id="t-screenshot">
       Screenshots
     </button>
+    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-recordings" id="t-recordings" tabindex="-1">
+      Recordings
+    </button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="tab-videos" id="t-videos" tabindex="-1">
       Download
     </button>
-    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-automap" id="t-automap" tabindex="-1">
-Auto-map
-</button>
-    <button class="tab" role="tab" aria-selected="false" aria-controls="tab-assets" id="t-assets" tabindex="-1">
-Assets
-</button>
     <button class="tab" role="tab" aria-selected="false" aria-controls="tab-other" id="t-other" tabindex="-1">
 Other
 </button>
@@ -97,6 +94,72 @@ Other
     </div>
   </section>
 
+  <section id="tab-recordings" class="tabPanel" role="tabpanel" aria-labelledby="t-recordings" hidden>
+    <div class="card">
+      <div class="row rowTight">
+        <div class="value">Recordings</div>
+        <label class="muiSwitch">
+          <input id="recordingsEnabled" type="checkbox" aria-label="Enable recordings">
+          <span class="track" aria-hidden="true"></span>
+          <span class="thumb" aria-hidden="true"></span>
+        </label>
+      </div>
+    </div>
+    <div class="card recordingsDependent">
+      <div class="row"><div class="label">Format</div><div class="value">MP4 / H.264</div></div>
+      <label class="field recordingScaleField">
+        <span>Scale</span>
+        <select id="recordingScale">
+          <option value="1">1x</option>
+          <option value="2" selected>2x</option>
+        </select>
+      </label>
+      <fieldset class="field recordingEndpoint">
+        <legend>Start</legend>
+        <div class="recordingEndpointFields">
+          <select id="recordingStartMode" aria-label="Start endpoint type"><option value="seconds">Seconds</option><option id="recordingStartFrameMode" value="frame" disabled>Frame</option></select>
+          <input id="recordingStartSeconds" aria-label="Start time (seconds)" type="number" min="0" step="0.1" value="0">
+          <select id="recordingStartFrame" aria-label="Start frame" hidden></select>
+        </div>
+      </fieldset>
+      <fieldset class="field recordingEndpoint">
+        <legend>End</legend>
+        <div class="recordingEndpointFields">
+          <select id="recordingEndMode" aria-label="End endpoint type"><option value="seconds">Seconds</option><option id="recordingEndFrameMode" value="frame" disabled>Frame</option></select>
+          <input id="recordingEndSeconds" aria-label="End time (seconds)" type="number" min="0" step="0.1" value="15">
+          <select id="recordingEndFrame" aria-label="End frame" hidden></select>
+        </div>
+      </fieldset>
+      <div id="recordingFrameStatus" class="hint" role="status">Detecting frames...</div>
+      <div class="actions"><button id="recordingFrameRefresh" class="btn btnOutlined">Re-detect frames</button></div>
+      <div class="actions"><button id="recordingSave" class="btn btnFilled">Save</button><span id="recordingSettingsStatus" class="hint" role="status"></span></div>
+    </div>
+    <div class="card recordingsDependent">
+      <div class="row"><div class="label">Status</div><div id="recordingStatus" class="value" role="status">Idle</div></div>
+      <div id="recordingAuthorization" class="recordingAuthorization" role="note" hidden>
+        <img src="../icons/icon40.png" width="32" height="32" alt="CO Plus extension icon">
+        <div>
+          <strong>Click CO Plus in Chrome's toolbar to start recording.</strong>
+          <p>Keep the "CO Plus - Ad Recording" tab active and click the CO Plus icon at the top right of Chrome.</p>
+          <p>Icon not visible? Open Chrome's Extensions menu (puzzle piece) and choose CO Plus.</p>
+        </div>
+      </div>
+      <div class="row"><div class="label">Progress</div><div id="recordingCount" class="value">0 / 0</div></div>
+      <progress id="recordingProgress" class="recordingProgress" value="0" max="1" aria-label="Recording progress"></progress>
+      <div id="recordingClip" hidden>
+        <div class="row"><div class="label">Current ad</div><div id="recordingClipTime" class="value"></div></div>
+        <progress id="recordingClipProgress" class="recordingProgress" aria-label="Current ad progress"></progress>
+      </div>
+      <div id="recordingError" class="errorText" role="alert" hidden></div>
+      <div class="actions">
+        <button id="recordingStart" class="btn btnFilled" disabled>Start recording</button>
+        <button id="recordingCancel" class="btn btnOutlined" disabled>Cancel</button>
+        <button id="recordingClear" class="btn btnOutlined" disabled>Clear selection</button>
+      </div>
+      <div class="actions"><a id="recordingDownload" class="btn btnFilled" hidden>Download MP4</a><button id="recordingPptx" class="btn btnOutlined" hidden>Download PPTX</button></div>
+    </div>
+  </section>
+
   <section id="tab-videos" class="tabPanel" role="tabpanel" aria-labelledby="t-videos" hidden="">
    <!-- Video enable switch -->
 <div class="card">
@@ -155,28 +218,12 @@ Other
   </div>
 </div>
 </section>
-<section id="tab-automap" class="tabPanel" role="tabpanel" aria-labelledby="t-automap" hidden>
+<section id="tab-other" class="tabPanel" role="tabpanel" aria-labelledby="t-other" hidden>
 <div class="card">
   <div class="row rowTight">
     <div>
-      <div class="value">Auto-map</div>
-      <div class="label">Enable/disable Auto-mapping for generating tree</div>
-    </div>
-
-    <label class="muiSwitch">
-      <input id="autoMapEnabled" type="checkbox" />
-      <span class="track" aria-hidden="true"></span>
-      <span class="thumb" aria-hidden="true"></span>
-    </label>
-  </div>
-</div>
-</section>
-<section id="tab-assets" class="tabPanel" role="tabpanel" aria-labelledby="t-assets" hidden>
-<div class="card">
-  <div class="row rowTight">
-    <div>
-      <div class="value">Bulk download</div>
-      <div class="label">Enable/disable “Download All”</div>
+      <div class="value">Assets bulk download</div>
+      <div class="label">Adds a “Download All” button to the advertiser Assets page</div>
     </div>
 
     <label class="muiSwitch">
@@ -190,8 +237,8 @@ Other
 <div class="card">
   <div class="row rowTight">
     <div>
-      <div class="value">Export CSV</div>
-      <div class="label">Enable/disable “Export CSV”</div>
+      <div class="value">Assets CSV export</div>
+      <div class="label">Adds an “Export CSV” button to the advertiser Assets page</div>
     </div>
 
     <label class="muiSwitch">
@@ -201,13 +248,11 @@ Other
     </label>
   </div>
 </div>
-</section>
-<section id="tab-other" class="tabPanel" role="tabpanel" aria-labelledby="t-other" hidden>
   <div class="card">
   <div class="row rowTight">
     <div>
       <div class="value">Add template</div>
-      <div class="label">Enables adding external templates to the previewPage</div>
+      <div class="label">Adds an “Add template” button to the ad variants preview page</div>
     </div>
 
     <label class="muiSwitch">
@@ -221,7 +266,7 @@ Other
   <div class="row rowTight">
     <div>
       <div class="value">Individual reload</div>
-      <div class="label">Enables reload individual display previews</div>
+      <div class="label">Adds a reload button to each display ad on the ad variants preview page</div>
     </div>
 
     <label class="muiSwitch">
@@ -231,7 +276,22 @@ Other
     </label>
   </div>
 </div>
+<div class="card">
+  <div class="row rowTight">
+    <div>
+      <div class="value" id="liveAdsetStatusLabel">Adset delivery status</div>
+      <div class="label">Shows Live / Not live on campaign pages (Status column) and adset pages (next to the title)</div>
+    </div>
+
+    <label class="muiSwitch">
+      <input id="liveAdsetStatusEnabled" type="checkbox" aria-labelledby="liveAdsetStatusLabel" />
+      <span class="track" aria-hidden="true"></span>
+      <span class="thumb" aria-hidden="true"></span>
+    </label>
+  </div>
+</div>
 </section>
+    <script src="../recording/recording-core.js"></script>
     <script src="panel.js"></script>
   </body>
 </html>

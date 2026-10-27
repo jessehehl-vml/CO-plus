@@ -9,7 +9,7 @@
  * 5) Tools: Screenshots
  * 6) Tools: Videos
  * 7) Tools: Assets (ZIP/CSV)
- * 8) Tools: Auto-map
+ * 8) Shared drawer popup
  * 9) Tools: Add external preview
  * 10) UI Injection (buttons + iframe buttons)
  * 11) Bootstrapping (observers + init)
@@ -35,6 +35,8 @@ const STORAGE_DEFAULTS = {
   imageType: "png", // "png" | "jpeg"
   screenshotFrames: [], // frame numbers to capture; [] = single capture after the delay
   screenshotsEnabled: true,
+  recordingsEnabled: true,
+  recordingDuration: 15,
 
   videoQuality: "1080p", // "1080p" | "720p" | "480p" | "270p"
   videosEnabled: true,
@@ -42,37 +44,10 @@ const STORAGE_DEFAULTS = {
   assetsZipEnabled: true,
   assetsCsvEnabled: true,
 
-  autoMapEnabled: true,
-
   individualReloadEnabled: true,
   addTemplateEnabled: true,
+  liveAdsetStatusEnabled: true,
 };
-
-let nodeTypesCache = null;
-
-async function loadNodeTypes() {
-  if (nodeTypesCache) return nodeTypesCache;
-
-  const url = chrome.runtime.getURL("content/node_types.json");
-
-  let res;
-  try {
-    res = await fetch(url);
-  } catch (e) {
-    console.error("[auto-map] fetch(node_types.json) failed", e);
-    throw e;
-  }
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(
-      `node_types.json HTTP ${res.status}: ${text.slice(0, 200)}`,
-    );
-  }
-
-  nodeTypesCache = await res.json();
-  return nodeTypesCache;
-}
 
 const API = {
   dispatch: "https://api.lemonpi.io/dispatch",
@@ -224,6 +199,251 @@ function getIdsFromUrl() {
   return { agencyId, advertiserId, campaignId, adsetId };
 }
 
+const liveAdsetChecks = new Map();
+
+function removeLiveAdsetStatus() {
+  document.getElementById("co-plus-live-adsets")?.remove();
+  document.querySelectorAll(".co-plus-delivery-replaced").forEach((cell) => {
+    cell.classList.remove("co-plus-delivery-replaced");
+  });
+  document.querySelectorAll(".co-plus-live-adset-status").forEach((badge) => {
+    badge.parentElement?.classList.remove("co-plus-delivery-cell");
+    badge.remove();
+  });
+}
+
+function stopLiveAdsetChecks() {
+  removeLiveAdsetStatus();
+  for (const check of liveAdsetChecks.values()) check.controller.abort();
+  liveAdsetChecks.clear();
+}
+
+function getLiveAdsetContext() {
+  const match = location.pathname.match(
+    /^\/(\d+)\/advertiser\/(\d+)\/campaign\/(\d+)(?:\/adset\/(\d+))?(?:\/|$)/,
+  );
+  if (!match) return null;
+  const [, agencyId, advertiserId, campaignId, adsetId] = match;
+  return { agencyId, advertiserId, campaignId, adsetId };
+}
+
+function getLiveAdsetDates(now = new Date()) {
+  const end = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+  const start = new Date(end.getTime() - 86400000);
+  return {
+    startDate: start.toISOString().slice(0, 10),
+    endDate: end.toISOString().slice(0, 10),
+  };
+}
+
+async function fetchLiveAdsets(context, dates, signal) {
+  let candidates;
+  if (context.adsetId) {
+    const response = await apiFetch(`${API.adsets2}/${context.adsetId}`, {
+      signal,
+    });
+    candidates = [await response.json()];
+  } else {
+    const url = new URL(API.adsets2);
+    url.searchParams.set(
+      "filters",
+      JSON.stringify({ campaignId: Number(context.campaignId) }),
+    );
+    url.searchParams.set("embed", JSON.stringify(["template_revisions"]));
+    const response = await apiFetch(url.toString(), { signal });
+    candidates = await response.json();
+    if (!Array.isArray(candidates))
+      throw new Error("Unexpected campaign adset response");
+  }
+  const adsets = candidates.filter((adset) => adset.archived === false);
+  const results = new Array(adsets.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < adsets.length && !signal?.aborted) {
+      const index = nextIndex++;
+      const adset = adsets[index];
+      try {
+        const url = new URL(
+          `https://api.lemonpi.io/analytics/v1/adset-insights/${adset.id}/stats`,
+        );
+        url.searchParams.set("start_date", dates.startDate);
+        url.searchParams.set("end_date", dates.endDate);
+        const response = await apiFetch(url.toString(), { signal });
+        const data = await response.json();
+        const impressions = data.impressions;
+        if (!Number.isSafeInteger(impressions) || impressions < 0) {
+          throw new Error("Impression total unavailable");
+        }
+        results[index] = {
+          id: adset.id,
+          name: adset.name,
+          impressions,
+          status: impressions > 1000 ? "Live" : "Not live",
+        };
+      } catch (error) {
+        results[index] = {
+          id: adset.id,
+          name: adset.name,
+          impressions: null,
+          status: "Unknown",
+          error: error.message,
+        };
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(3, adsets.length) }, () => worker()),
+  );
+  return results;
+}
+
+function renderLiveAdsetStatus(context, dates, check) {
+  const targets = context.adsetId
+    ? [document.querySelector("h1")].filter(Boolean).map((heading) => ({
+        parent: heading.parentElement,
+        heading,
+        id: context.adsetId,
+      }))
+    : Array.from(document.querySelectorAll('[role="row"][data-id]'))
+        .map((row) => ({
+          parent: row.querySelector('[role="gridcell"][data-field="status"]'),
+          id: row.getAttribute("data-id"),
+        }))
+        .filter((target) => target.parent);
+  for (const { parent, heading, id } of targets) {
+    const result = check.results?.get(String(id));
+    let badge = parent.querySelector(".co-plus-live-adset-status");
+    if (check.results && !result) {
+      badge?.remove();
+      parent.classList.remove("co-plus-delivery-cell");
+      parent.classList.remove("co-plus-delivery-replaced");
+      continue;
+    }
+    if (!context.adsetId)
+      parent.classList.toggle(
+        "co-plus-delivery-replaced",
+        Boolean(check.showDelivery),
+      );
+    if (!check.showDelivery) {
+      badge?.remove();
+      badge = null;
+    } else if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "co-plus-live-adset-status";
+      if (heading) {
+        badge.classList.add("co-plus-delivery-title");
+        heading.after(badge);
+      } else parent.appendChild(badge);
+      if (!context.adsetId) parent.classList.add("co-plus-delivery-cell");
+    }
+    const status = result?.status || (check.error ? "Unknown" : "Checking...");
+    const day = `${dates.startDate} (UTC)`;
+    const tooltip =
+      result?.error || check.error
+        ? `Delivery unknown: ${result?.error || check.error}`
+        : !result
+          ? "Checking impressions..."
+          : `${status === "Live" ? "Live: more than 1,000" : "Not live: 1,000 or fewer"} impressions in the last full UTC day.\n${result.impressions.toLocaleString()} impressions on ${day}`;
+    if (badge && badge.textContent !== status) badge.textContent = status;
+    if (badge && badge.dataset.tooltip !== tooltip) {
+      badge.dataset.tooltip = tooltip;
+      badge.setAttribute("aria-label", `${status}. ${tooltip}`);
+      badge.tabIndex = 0;
+    }
+    if (badge && badge.dataset.status !== status) badge.dataset.status = status;
+    if (!context.adsetId)
+      parent.classList.toggle("co-plus-delivery-cell", Boolean(badge));
+  }
+}
+
+function wireDeliveryTooltip() {
+  let tip = null;
+  const hide = () => tip?.remove();
+  const show = (event) => {
+    const badge = event.target.closest?.(".co-plus-live-adset-status");
+    if (!badge?.dataset.tooltip) return;
+    tip ||= Object.assign(document.createElement("div"), {
+      className: "co-plus-tooltip",
+      role: "tooltip",
+    });
+    tip.textContent = badge.dataset.tooltip;
+    document.body.appendChild(tip);
+    const rect = badge.getBoundingClientRect();
+    const width = tip.offsetWidth;
+    tip.style.left = `${Math.max(4, Math.min(innerWidth - width - 4, rect.left + rect.width / 2 - width / 2))}px`;
+    tip.style.top = `${rect.bottom + 8}px`;
+  };
+  document.addEventListener("mouseover", show);
+  document.addEventListener("focusin", show);
+  document.addEventListener("mouseout", (event) => {
+    if (event.target.closest?.(".co-plus-live-adset-status")) hide();
+  });
+  document.addEventListener("focusout", hide);
+  addEventListener("scroll", hide, true);
+}
+wireDeliveryTooltip();
+
+async function injectLiveAdsetStatus() {
+  const context = getLiveAdsetContext();
+  if (!context) {
+    removeLiveAdsetStatus();
+    return;
+  }
+  const { liveAdsetStatusEnabled } = await storageGet({
+    liveAdsetStatusEnabled: STORAGE_DEFAULTS.liveAdsetStatusEnabled,
+  });
+  if (!liveAdsetStatusEnabled) {
+    stopLiveAdsetChecks();
+    return;
+  }
+  const current = getLiveAdsetContext();
+  if (
+    current?.advertiserId !== context.advertiserId ||
+    current?.campaignId !== context.campaignId ||
+    current?.adsetId !== context.adsetId
+  )
+    return;
+  document.getElementById("co-plus-live-adsets")?.remove();
+  const dates = getLiveAdsetDates();
+  const key = `${context.advertiserId}:${context.campaignId}:${context.adsetId || "all"}:${dates.startDate}`;
+  let check = liveAdsetChecks.get(key);
+  if (!check || Date.now() - check.createdAt > 300000) {
+    check?.controller.abort();
+    const controller = new AbortController();
+    check = { createdAt: Date.now(), controller, results: null, error: null };
+    check.promise = fetchLiveAdsets(context, dates, controller.signal).then(
+      (results) => {
+        check.results = new Map(
+          results.filter(Boolean).map((result) => [String(result.id), result]),
+        );
+      },
+      (error) => {
+        check.error = error.message;
+      },
+    );
+    liveAdsetChecks.set(key, check);
+    if (liveAdsetChecks.size > 20) {
+      const oldest = liveAdsetChecks.keys().next().value;
+      liveAdsetChecks.get(oldest).controller.abort();
+      liveAdsetChecks.delete(oldest);
+    }
+  }
+  check.showDelivery = liveAdsetStatusEnabled;
+  renderLiveAdsetStatus(context, dates, check);
+  if (!check.results && !check.error) await check.promise;
+  const latest = getLiveAdsetContext();
+  if (
+    liveAdsetChecks.get(key) !== check ||
+    latest?.advertiserId !== context.advertiserId ||
+    latest?.campaignId !== context.campaignId ||
+    latest?.adsetId !== context.adsetId
+  )
+    return;
+  renderLiveAdsetStatus(context, dates, check);
+}
+
 function isTokenExpired(token, skewSeconds = 30) {
   try {
     const payload = JSON.parse(
@@ -252,7 +472,10 @@ function getAuthCandidates() {
   ];
 }
 
-async function apiFetch(url, { method = "GET", headers = {}, body } = {}) {
+async function apiFetch(
+  url,
+  { method = "GET", headers = {}, body, signal } = {},
+) {
   const candidates = getAuthCandidates();
   if (!candidates.length) throw new Error("Access token not available");
 
@@ -268,6 +491,7 @@ async function apiFetch(url, { method = "GET", headers = {}, body } = {}) {
         Authorization: auth,
       },
       body,
+      signal,
     });
     if (res.status !== 401 && res.status !== 403) break;
   }
@@ -962,18 +1186,107 @@ async function screenshotAll() {
   setTimeout(() => URL.revokeObjectURL(url), 250);
 }
 
+const recordingUrls = new Map();
+let preparingRecording = false;
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.action !== "releaseRecording") return;
+  for (const url of recordingUrls.get(message.id) || [])
+    URL.revokeObjectURL(url);
+  recordingUrls.delete(message.id);
+});
+
+async function openAdRecordings(context = null) {
+  if (preparingRecording) return;
+  preparingRecording = true;
+  const urls = [];
+  try {
+    if (!context) {
+      const panel = await runtimeSend({ action: "openRecordingPanel" });
+      if (!panel?.success)
+        throw new Error(
+          panel?.error || "Could not open the recording side panel.",
+        );
+    }
+    const { recordingsEnabled } = await storageGet({
+      recordingsEnabled: STORAGE_DEFAULTS.recordingsEnabled,
+    });
+    if (!recordingsEnabled)
+      throw new Error("Recordings are disabled in the side panel.");
+    const variants = await fetchAdVariants();
+    const selected = context
+      ? [
+          {
+            variant: context.contentId,
+            sizes: [`${context.width}x${context.height}`],
+          },
+        ]
+      : await extractVariantsFromPreview();
+    if (!selected.length)
+      throw new Error("Select at least one ad size to record.");
+    const jobs = [];
+    for (const item of selected) {
+      const match = variants.find(
+        (variant) =>
+          variant?.data?.["content-id"]?.trim() === item.variant.trim(),
+      );
+      if (!match)
+        throw new Error(
+          `No matching variant found for ${item.variant}. Refresh the preview and retry.`,
+        );
+      for (const size of item.sizes) {
+        const [width, height] = size.split("x").map(Number);
+        if (
+          ![width, height].every(
+            (value) => Number.isInteger(value) && value > 0 && value <= 4096,
+          )
+        )
+          throw new Error(`Unsupported recording size: ${size}.`);
+        const blobUrl = buildAdBlob(getRenderData(match, { width, height }));
+        urls.push(blobUrl);
+        jobs.push({ blobUrl, name: item.variant, width, height });
+      }
+    }
+    if (!jobs.length || jobs.length > 500)
+      throw new Error("Select between 1 and 500 ads to record.");
+    const response = await runtimeSend({
+      action: "openRecording",
+      jobs,
+    });
+    if (!response?.success)
+      throw new Error(response?.error || "Could not open the recorder.");
+    recordingUrls.set(response.id, urls);
+  } catch (error) {
+    urls.forEach((url) => URL.revokeObjectURL(url));
+    showToast(`Recording failed: ${error.message}`);
+  } finally {
+    preparingRecording = false;
+  }
+}
+
 // =========================
 // 6) Tools: Videos
 // =========================
 
-// 6.1 VAST key parsing + picking
+// 6.1 Video component parsing + picking
 
 function parseVastVideoKeys(components = {}) {
   const out = [];
-  for (const key of Object.keys(components)) {
-    const m = key.match(/^urn:lemonpi:vast:video:scale:([^:]+):kbps:(\d+)$/);
-    if (!m) continue;
-    out.push({ key, scale: m[1], kbps: Number(m[2]) });
+  for (const [key, component] of Object.entries(components)) {
+    const url = component?.value;
+    const meta = component?.metadata || {};
+    const vast = key.match(/vast:video(?::scale:([^:]+))?(?::kbps:(\d+))?/);
+    const isVideo =
+      vast ||
+      /^video\//.test(meta["mime-type"] || "") ||
+      /\.mp4(?:[?#]|$)/i.test(typeof url === "string" ? url : "");
+    if (!isVideo || typeof url !== "string" || !url) continue;
+    out.push({
+      key,
+      scale: vast?.[1] ?? null,
+      kbps: Number(vast?.[2] ?? meta.bitrate ?? 0) || 0,
+      height: Number(meta.height) || scaleHeight(vast?.[1]),
+    });
   }
   return out;
 }
@@ -995,31 +1308,12 @@ function scaleHeight(scale) {
 }
 
 function pickBestVideoComponentKey(components, videoQuality) {
-  const candidates = parseVastVideoKeys(components);
-  if (!candidates.length) return null;
-
   const desired = desiredHeightFromQuality(videoQuality);
-
-  let bestScale = null;
-  let bestDiff = Infinity;
-
-  for (const c of candidates) {
-    const h = scaleHeight(c.scale);
-    if (h == null) continue;
-    const diff = Math.abs(h - desired);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      bestScale = c.scale;
-    }
-  }
-
-  if (!bestScale) return null;
-
-  // within the chosen scale, pick highest kbps
+  const distance = (c) => (c.height ? Math.abs(c.height - desired) : Infinity);
   return (
-    candidates
-      .filter((c) => c.scale === bestScale)
-      .sort((a, b) => b.kbps - a.kbps)[0]?.key ?? null
+    parseVastVideoKeys(components).sort(
+      (a, b) => distance(a) - distance(b) || b.kbps - a.kbps,
+    )[0]?.key ?? null
   );
 }
 async function collectMediaForMeta(adVariantsData) {
@@ -1058,51 +1352,6 @@ async function collectMediaForMeta(adVariantsData) {
     }
   }
   return mediaFiles;
-}
-async function collectVideoFilesForQuality(adVariantsData, videoQuality) {
-  const videoFiles = [];
-  const usedKeys = new Map();
-  let missingKeyCount = 0;
-
-  for (const item of adVariantsData) {
-    const contentId = item?.data?.["content-id"];
-    const variants = item?.data?.["ad-variants"] || [];
-
-    for (const variant of variants) {
-      const components = variant?.components || {};
-      const key = pickBestVideoComponentKey(components, videoQuality);
-
-      if (!key) {
-        missingKeyCount++;
-        continue;
-      }
-
-      const url = components[key]?.value;
-      if (!url) continue;
-
-      usedKeys.set(key, (usedKeys.get(key) || 0) + 1);
-
-      const { width, height } = variant.dimensions || {};
-      const fileName = `${contentId}_${width}x${height}.mp4`;
-      videoFiles.push({ url, fileName });
-    }
-  }
-
-  return {
-    videoFiles,
-    missingKeyCount,
-    usedKeys: Object.fromEntries(usedKeys),
-  };
-}
-
-function parseVastVideoKeys(components = {}) {
-  const out = [];
-  for (const key of Object.keys(components)) {
-    const m = key.match(/^urn:lemonpi:vast:video:scale:([^:]+):kbps:(\d+)$/);
-    if (!m) continue;
-    out.push({ key, scale: m[1], kbps: Number(m[2]) });
-  }
-  return out;
 }
 
 // 6.2 Collect video files for the chosen quality
@@ -1229,9 +1478,16 @@ async function downloadVideos(channel) {
   }
 
   if (!mediaFiles.length) {
-    reportVideoError(`No ${channel === "meta" ? "media" : "videos"} found.`, {
-      phase: "collect",
-    });
+    const variants = adVariantsData.flatMap(
+      (item) => item?.data?.["ad-variants"] || [],
+    );
+    const keys = [
+      ...new Set(variants.flatMap((v) => Object.keys(v?.components || {}))),
+    ];
+    reportVideoError(
+      `No ${channel === "meta" ? "media" : "videos"} found in ${variants.length} variant(s). Component keys: ${keys.slice(0, 8).join(", ") || "none"}`,
+      { phase: "collect", keys },
+    );
     return;
   }
 
@@ -1431,153 +1687,8 @@ async function exportUrlsToCsv() {
 }
 
 // =========================
-// 8) Tools: Auto-map
+// 8) Shared drawer popup
 // =========================
-
-// 8.1 Extract + API update
-
-function extractTargetingValues(adVariants) {
-  const targetingValues = {};
-
-  adVariants.forEach((item) => {
-    const variants = item?.data?.["ad-variants"] || [];
-    variants.forEach((variant) => {
-      const tValues = variant?.["targeting-values"] || [];
-      tValues.forEach(({ name, value }) => {
-        if (!targetingValues[name]) targetingValues[name] = [];
-        targetingValues[name].push(...(value || []));
-      });
-    });
-  });
-
-  Object.keys(targetingValues).forEach((k) => {
-    targetingValues[k] = [...new Set(targetingValues[k])];
-  });
-
-  return targetingValues;
-}
-
-async function updateTargetingConfig(mappings) {
-  if (!getAuthCandidates().length)
-    throw new Error("Access token not available");
-  if (!adsetData?.advertiserId || !adsetData?.id) {
-    throw new Error("adsetData missing advertiserId or adset id");
-  }
-
-  const advertiserId = adsetData.advertiserId;
-  const adsetId = adsetData.id;
-
-  const res = await apiFetch(
-    `${API.contentBuild}/advertisers/${advertiserId}/adsets/${adsetId}/targeting-config`,
-    {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(mappings),
-    },
-  );
-
-  return res.json();
-}
-
-// 8.2 predicate builders
-function capitalize(word) {
-  return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-}
-
-function parseTimeRange(label) {
-  const [start, end] = label.split(">").map((s) => s.trim());
-  const [sh, sm] = start.split(":").map(Number);
-  const [eh, em] = end.split(":").map(Number);
-  return { start: { hour: sh, minute: sm }, end: { hour: eh, minute: em } };
-}
-
-function parseExactDateRange(label, year = new Date().getUTCFullYear()) {
-  if (!label || typeof label !== "string")
-    throw new Error("Invalid date range label");
-
-  const parts = label.split(/\s*[-_|>]\s*/);
-  if (parts.length !== 2)
-    throw new Error(`Invalid date range format: "${label}"`);
-
-  const [rawStart, rawEnd] = parts;
-  const startDate = new Date(`${rawStart} ${year} UTC`);
-  const endDate = new Date(`${rawEnd} ${year} UTC`);
-  if (isNaN(startDate) || isNaN(endDate))
-    throw new Error(`Unable to parse dates from label: "${label}"`);
-
-  endDate.setUTCHours(23, 59, 59, 999);
-  return { label, start: startDate.toISOString(), end: endDate.toISOString() };
-}
-
-function buildPredicate({ label, type, field, predicate }) {
-  switch (type) {
-    case "day-of-week": {
-      const days = label.split(",").map((d) => capitalize(d.trim()));
-      return [
-        days.length > 1 ? "in" : "=",
-        field,
-        days.length > 1 ? days : days[0],
-      ];
-    }
-    case "time-of-day": {
-      return [predicate, field, parseTimeRange(label)];
-    }
-    case "timestamp": {
-      const range = parseExactDateRange(label);
-      return [
-        "in-range",
-        field,
-        { start: { timestamp: range.start }, end: { timestamp: range.end } },
-      ];
-    }
-    case "exact-match": {
-      if (!label) return null;
-      return [predicate, field, label];
-    }
-    default:
-      return null;
-  }
-}
-
-//8.3 Build payload from UI Selections
-async function buildTargetingPayload(nodeTypeSelections) {
-  const payload = [];
-  const nodeTypes = await loadNodeTypes();
-
-  for (const [column, selection] of Object.entries(nodeTypeSelections)) {
-    const { value, nodeType, trigger } = selection;
-    if (!nodeType || !trigger) continue;
-
-    const nodeConfig = nodeTypes.find((n) => n.name === nodeType);
-    if (!nodeConfig) continue;
-
-    const triggerConfig = nodeConfig.triggers.find((t) => t.name === trigger);
-    if (!triggerConfig) continue;
-
-    const { field, type, predicate } = triggerConfig;
-
-    const labels = (value || [])
-      .map((label) => {
-        const pred = buildPredicate({ label, type, field, predicate });
-        return pred ? { label, predicate: pred } : null;
-      })
-      .filter(Boolean);
-
-    payload.push({
-      "targeting-column": column,
-      mapping: "mapped",
-      "node-type": nodeType,
-      labels,
-    });
-  }
-
-  return payload;
-}
-
-// 8.4 UI
 async function openDrawerPopup({
   title,
   buildContent, // function(formContainer, enableNextCallback)
@@ -1698,284 +1809,6 @@ async function openDrawerPopup({
       }, 225);
     }
   });
-}
-async function openTargetingPopup(targeting) {
-  const nodeTypes = await loadNodeTypes();
-
-  return openDrawerPopup({
-    title: "Auto-map",
-    buildContent: (content, enableNext) => {
-      const list = document.createElement("ul");
-      list.className = "input-root";
-      function recompute() {
-        const rows = Array.from(list.querySelectorAll(".list-item"));
-        const anyComplete = rows.some((li) => {
-          const main = li.querySelector(".input-base input")?.value?.trim();
-          const sub = li
-            .querySelector(".second-input-base input")
-            ?.value?.trim();
-          return !!(main && sub);
-        });
-        enableNext(anyComplete);
-      }
-      Object.keys(targeting).forEach((column) => {
-        const li = document.createElement("li");
-        li.className = "list-item";
-        const label = document.createElement("p");
-        label.className = "list-label";
-        label.textContent = column;
-        const autocompleteInput = createAutocompleteInput(
-          column,
-          nodeTypes,
-          recompute,
-        );
-        li.append(label, autocompleteInput);
-        list.appendChild(li);
-      });
-      content.appendChild(list);
-    },
-    onNext: () => {
-      const payload = {};
-      document.querySelectorAll(".list-item").forEach((li) => {
-        const mainInput = li.querySelector(".input-base input");
-        const subInput = li.querySelector(".second-input-base input");
-        const column = mainInput?.dataset.column || mainInput?.name;
-        if (!column) return;
-        payload[column] = {
-          value: targeting[column],
-          nodeType: mainInput?.value || null,
-          trigger: subInput?.value || null,
-        };
-      });
-      return payload;
-    },
-  });
-}
-
-function createAutocompleteInput(column, nodeTypes, onAnyChange) {
-  const root = document.createElement("div");
-  root.className = "input-root";
-  root.style.position = "relative";
-
-  let secondInputContainer = null;
-
-  function notify() {
-    try {
-      onAnyChange?.();
-    } catch {}
-  }
-
-  function createSingleInput({ options, isSecondInput = false }) {
-    const formControl = document.createElement("div");
-    formControl.className =
-      "MuiFormControl-root MuiFormControl-fullWidth MuiTextField-root";
-
-    const inputBase = document.createElement("div");
-    inputBase.className = isSecondInput
-      ? "input-base second-input-base"
-      : "input-base";
-
-    // start adornment
-    const startAdornment = document.createElement("div");
-    startAdornment.className =
-      "MuiInputAdornment-root MuiInputAdornment-positionStart MuiInputAdornment-outlined MuiInputAdornment-sizeSmall";
-
-    const inputIcon = document.createElement("span");
-    inputIcon.className = "material-icons input-icon";
-    inputIcon.style.display = "none";
-    startAdornment.appendChild(inputIcon);
-
-    // input
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "input";
-    input.dataset.column = column;
-    if (isSecondInput) input.placeholder = "Select trigger";
-
-    // end adornment
-    const endAdornment = document.createElement("div");
-    endAdornment.className = "MuiAutocomplete-endAdornment icon-wrap";
-    endAdornment.style.display = "flex";
-
-    const clearBtn = document.createElement("button");
-    clearBtn.type = "button";
-    clearBtn.className = "clear-btn";
-    clearBtn.textContent = "×";
-    clearBtn.style.visibility = "hidden";
-
-    const popupBtn = document.createElement("button");
-    popupBtn.type = "button";
-    popupBtn.className = "open-btn";
-    popupBtn.innerHTML = "▾";
-
-    endAdornment.append(clearBtn, popupBtn);
-
-    // outline
-    const notchedOutline = document.createElement("fieldset");
-    notchedOutline.className = "input-outline";
-
-    inputBase.append(startAdornment, input, endAdornment, notchedOutline);
-    formControl.appendChild(inputBase);
-    root.appendChild(formControl);
-
-    // dropdown
-    const dropdown = document.createElement("div");
-    dropdown.className = "MuiAutocomplete-paper";
-    dropdown.style.cssText = `
-    position: absolute;
-    background: #fff;
-    border: 1px solid rgba(0,0,0,0.12);
-    box-shadow: 0px 4px 12px rgba(0,0,0,0.08);
-    margin-top: 4px;
-    display: none;
-    z-index: 1000;
-  `;
-    root.appendChild(dropdown);
-
-    function closeDropdown() {
-      dropdown.style.display = "none";
-    }
-
-    function updateDropdown(filter = "") {
-      dropdown.innerHTML = "";
-
-      options.forEach((opt) => {
-        const optName = opt.name ?? opt;
-        if (filter && !optName.toLowerCase().includes(filter.toLowerCase()))
-          return;
-
-        const item = document.createElement("div");
-        item.className = "MuiAutocomplete-option dropdown-option";
-        item.style.cssText =
-          "padding: 4px 12px; cursor: pointer; display: flex; align-items: center;";
-
-        if (!isSecondInput && opt.icon) {
-          const iconEl = document.createElement("span");
-          iconEl.className = "material-icons input-icon";
-          iconEl.textContent = opt.icon;
-          iconEl.style.marginRight = "8px";
-          item.appendChild(iconEl);
-        }
-
-        const textEl = document.createElement("span");
-        textEl.textContent = optName;
-        item.appendChild(textEl);
-
-        item.onmouseenter = () =>
-          (item.style.backgroundColor = "rgba(0,0,0,0.04)");
-        item.onmouseleave = () => (item.style.backgroundColor = "transparent)");
-
-        item.onclick = () => {
-          input.value = optName;
-          clearBtn.style.visibility = "visible";
-          closeDropdown();
-          input.focus();
-
-          if (!isSecondInput && opt.icon) {
-            inputIcon.textContent = opt.icon;
-            inputIcon.style.display = "flex";
-          }
-
-          // create second input for triggers
-          if (!isSecondInput && opt.triggers) {
-            if (secondInputContainer) secondInputContainer.remove();
-
-            secondInputContainer = createSingleInput({
-              options: opt.triggers,
-              isSecondInput: true,
-            });
-
-            root.appendChild(secondInputContainer);
-
-            const subInputEl = secondInputContainer.querySelector("input");
-            subInputEl?.addEventListener("input", notify);
-          }
-
-          notify();
-        };
-
-        dropdown.appendChild(item);
-      });
-
-      dropdown.style.width = inputBase.getBoundingClientRect().width + "px";
-      dropdown.style.display = dropdown.children.length ? "block" : "none";
-    }
-
-    // events
-    input.addEventListener("focus", () => updateDropdown(input.value));
-    input.addEventListener("input", () => {
-      clearBtn.style.visibility = input.value ? "visible" : "hidden";
-      updateDropdown(input.value);
-
-      // remove second input if main cleared
-      if (!isSecondInput && secondInputContainer && !input.value) {
-        secondInputContainer.remove();
-        secondInputContainer = null;
-      }
-
-      notify();
-    });
-
-    popupBtn.onclick = (e) => {
-      e.stopPropagation();
-      dropdown.style.display === "block"
-        ? closeDropdown()
-        : updateDropdown(input.value);
-      input.focus();
-    };
-
-    clearBtn.onclick = () => {
-      input.value = "";
-      clearBtn.style.visibility = "hidden";
-      inputIcon.style.display = "none";
-      closeDropdown();
-
-      if (!isSecondInput && secondInputContainer) {
-        secondInputContainer.remove();
-        secondInputContainer = null;
-      }
-
-      notify();
-    };
-
-    document.addEventListener("click", (e) => {
-      if (!root.contains(e.target)) closeDropdown();
-    });
-
-    return formControl;
-  }
-
-  // Initialize main input with node types loaded by openTargetingPopup()
-  createSingleInput({ options: nodeTypes || [] });
-  return root;
-}
-// 8.5 main Auto-map
-async function autoMap() {
-  // ensure adsetData is present (needed for updateTargetingConfig)
-  if (!adsetData && location.href.includes("/adset/")) {
-    try {
-      await fetchAdsetData();
-    } catch {}
-  }
-
-  let allAdVariants;
-  try {
-    allAdVariants = await fetchAdVariants();
-  } catch (err) {
-    console.warn("[auto-map] fetchAdVariants failed:", err);
-    return;
-  }
-
-  const targetingValues = extractTargetingValues(allAdVariants);
-  if (!targetingValues || Object.keys(targetingValues).length === 0) return;
-
-  try {
-    const nodeTypeSelections = await openTargetingPopup(targetingValues);
-    const payload = await buildTargetingPayload(nodeTypeSelections);
-    await updateTargetingConfig(payload);
-  } catch (err) {
-    console.warn("[auto-map] cancelled/failed:", err);
-  }
 }
 // =========================
 // 9) Add External Preview
@@ -2483,10 +2316,6 @@ function findButtonByTextIncludes(text, root = document) {
   return $$("button", root).find((b) => b.textContent?.includes(text));
 }
 
-function findSpanByExactText(sel, exactText) {
-  return $$(sel).find((el) => el.textContent?.trim() === exactText);
-}
-
 function ensureButton(opts) {
   const {
     id,
@@ -2524,6 +2353,7 @@ function ensureButton(opts) {
 const screenshotUI = {
   wired: false,
   btn: null,
+  recordBtn: null,
   treeRoot: null,
   observer: null,
   onChange: null,
@@ -2573,6 +2403,7 @@ function teardownScreenshotCountUpdater() {
 
   screenshotUI.wired = false;
   screenshotUI.btn = null;
+  screenshotUI.recordBtn = null;
   screenshotUI.treeRoot = null;
   screenshotUI.observer = null;
   screenshotUI.onChange = null;
@@ -2582,7 +2413,8 @@ function teardownScreenshotCountUpdater() {
 
 async function updateScreenshotBtnCount() {
   const btn = screenshotUI.btn;
-  if (!btn) return;
+  const recordBtn = screenshotUI.recordBtn;
+  if (!btn && !recordBtn) return;
 
   const seq = ++screenshotUI.seq;
   const previewVariants = await extractVariantsFromPreview(); // from Section 5
@@ -2594,15 +2426,33 @@ async function updateScreenshotBtnCount() {
 
   // Only touch the DOM when the count changed: rewriting the button is itself a mutation that
   // re-triggers this updater, and replacing the icon between mousedown and mouseup swallows the click
-  if (btn.dataset.count === String(total)) return;
-  btn.dataset.count = String(total);
-  btn.innerHTML = `<span class="material-icons camera-icon">camera_alt</span> ${total}`;
-  btn.disabled = total === 0;
+  if (btn && btn.dataset.count !== String(total)) {
+    btn.dataset.count = String(total);
+    btn.innerHTML = `<span class="material-icons camera-icon">camera_alt</span> ${total}`;
+    btn.disabled = total === 0;
+  }
+  if (recordBtn && recordBtn.dataset.count !== String(total)) {
+    recordBtn.dataset.count = String(total);
+    recordBtn.innerHTML = `<span class="material-icons" aria-hidden="true">videocam</span> ${total}`;
+    recordBtn.disabled = total === 0;
+  }
 }
 
 function wireScreenshotCountUpdater(btn) {
   screenshotUI.btn = btn;
-  if (screenshotUI.wired) return;
+  wirePreviewCountUpdater();
+}
+
+function wireRecordingCountUpdater(btn) {
+  screenshotUI.recordBtn = btn;
+  wirePreviewCountUpdater();
+}
+
+function wirePreviewCountUpdater() {
+  if (screenshotUI.wired) {
+    screenshotUI.schedule();
+    return;
+  }
 
   screenshotUI.wired = true;
   screenshotUI.schedule = debounce(updateScreenshotBtnCount, 200);
@@ -2626,7 +2476,14 @@ function wireScreenshotCountUpdater(btn) {
 
 function removeScreenshotButton() {
   document.getElementById("screenshot-btn")?.remove();
-  teardownScreenshotCountUpdater();
+  screenshotUI.btn = null;
+  if (!screenshotUI.recordBtn) teardownScreenshotCountUpdater();
+}
+
+function removeRecordingButton() {
+  document.getElementById("record-ads-btn")?.remove();
+  screenshotUI.recordBtn = null;
+  if (!screenshotUI.btn) teardownScreenshotCountUpdater();
 }
 
 // 10.3 - inject buttons
@@ -2636,17 +2493,17 @@ async function injectButtons() {
 
   const {
     screenshotsEnabled,
+    recordingsEnabled,
     videosEnabled,
     assetsZipEnabled,
     assetsCsvEnabled,
-    autoMapEnabled,
     addTemplateEnabled,
   } = await storageGet({
     screenshotsEnabled: STORAGE_DEFAULTS.screenshotsEnabled,
+    recordingsEnabled: STORAGE_DEFAULTS.recordingsEnabled,
     videosEnabled: STORAGE_DEFAULTS.videosEnabled,
     assetsZipEnabled: STORAGE_DEFAULTS.assetsZipEnabled,
     assetsCsvEnabled: STORAGE_DEFAULTS.assetsCsvEnabled,
-    autoMapEnabled: STORAGE_DEFAULTS.autoMapEnabled,
     addTemplateEnabled: STORAGE_DEFAULTS.addTemplateEnabled,
   });
   // ---------- Screenshot button (preview) ----------
@@ -2666,6 +2523,21 @@ async function injectButtons() {
         onClick: screenshotAll, // Section 5
       });
       wireScreenshotCountUpdater(btn);
+    }
+    if (recordingsEnabled) {
+      const recordButton = ensureButton({
+        id: "record-ads-btn",
+        parent: shareButton.parentNode,
+        afterElement: shareButton.previousSibling,
+        className: "next-btn",
+        text: `<span class="material-icons" aria-hidden="true">videocam</span>`,
+        onClick: () => openAdRecordings(),
+      });
+      recordButton.title = "Record selected ads (MP4/H.264)";
+      recordButton.setAttribute("aria-label", recordButton.title);
+      wireRecordingCountUpdater(recordButton);
+    } else {
+      removeRecordingButton();
     }
     if (addTemplateEnabled) {
       ensureButton({
@@ -2741,44 +2613,16 @@ async function injectButtons() {
       document.getElementById("download-videos-btn")?.remove();
     }
   }
-
-  // ---------- Auto-map menu item ----------
-  const genTreeSpan = findSpanByExactText(
-    "span.MuiMenuItem-header",
-    "Generate Tree",
-  );
-  const generateTreeLi = genTreeSpan?.closest("li") || null;
-
-  if (!autoMapEnabled) {
-    document.getElementById("auto-map-btn")?.remove();
-  } else if (generateTreeLi && RE.adVariantsPage.test(url)) {
-    ensureButton({
-      id: "auto-map-btn",
-      parent: generateTreeLi.parentNode,
-      afterElement: generateTreeLi,
-      tag: "li",
-      className: "auto-map-btn",
-      text: `<div class="MuiAvatar-root auto-map-icon">
-            <span class="material-icons notranslate" aria-hidden="true">map</span>
-          </div>
-          <div class="MuiStack-root css-1q9ee12">
-            <span class="MuiMenuItem-header">Auto-map</span>
-            <span>Automatically map targeting columns with values from feed.</span>
-          </div>`,
-      onClick: () => {
-        document.querySelector(".MuiBackdrop-root")?.click();
-        autoMap(); // Section 8
-      },
-    });
-  }
 }
 
 // 10.4 inject iframe buttons
 async function injectIframeButtons() {
-  const { screenshotsEnabled, individualReloadEnabled } = await storageGet({
-    screenshotsEnabled: STORAGE_DEFAULTS.screenshotsEnabled,
-    individualReloadEnabled: STORAGE_DEFAULTS.individualReloadEnabled,
-  });
+  const { screenshotsEnabled, recordingsEnabled, individualReloadEnabled } =
+    await storageGet({
+      screenshotsEnabled: STORAGE_DEFAULTS.screenshotsEnabled,
+      recordingsEnabled: STORAGE_DEFAULTS.recordingsEnabled,
+      individualReloadEnabled: STORAGE_DEFAULTS.individualReloadEnabled,
+    });
 
   const containers = document.querySelectorAll(
     "div.MuiStack-root.MuiPaper-root.MuiPaper-elevation1",
@@ -2791,6 +2635,38 @@ async function injectIframeButtons() {
 
     const existingReloadBtn = container.querySelector(".iframe-reload-btn");
     const existingShotBtn = container.querySelector(".iframe-screenshot-btn");
+    const existingRecordBtn = container.querySelector(".iframe-record-btn");
+
+    if (!recordingsEnabled) {
+      existingRecordBtn?.remove();
+    } else if (!existingRecordBtn) {
+      const recordButton = document.createElement("button");
+      recordButton.className =
+        "MuiButtonBase-root MuiIconButton-root MuiIconButton-colorGrey MuiIconButton-sizeMedium css-hmbvib iframe-record-btn";
+      recordButton.type = "button";
+      recordButton.title = "Record this ad (MP4/H.264)";
+      recordButton.setAttribute("aria-label", recordButton.title);
+      recordButton.innerHTML = `<span class="material-icons" aria-hidden="true">videocam</span>`;
+      recordButton._run = async () => {
+        if (recordButton.disabled) return;
+        const context = getIframeContext(container);
+        if (!context)
+          return showToast(
+            "Recording failed: could not extract the ad context.",
+          );
+        recordButton.disabled = true;
+        try {
+          await openAdRecordings(context);
+        } finally {
+          recordButton.disabled = false;
+        }
+      };
+      recordButton.addEventListener("click", () => {
+        if (Date.now() - (recordButton._lastPress || 0) > 1000)
+          void recordButton._run();
+      });
+      readyChip.insertAdjacentElement("afterend", recordButton);
+    }
 
     // --- Reload button toggle ---
     if (!individualReloadEnabled) {
@@ -2917,6 +2793,7 @@ const scheduleInject = debounce(
     try {
       await injectIframeButtons();
       await injectButtons();
+      void injectLiveAdsetStatus();
     } catch (err) {
       const msg = err?.message || String(err);
 
@@ -2944,7 +2821,11 @@ window.addEventListener(
     if (e.button !== 0) return;
     const btn = document
       .elementsFromPoint(e.clientX, e.clientY)
-      .find((el) => el.classList?.contains("iframe-screenshot-btn"));
+      .find(
+        (el) =>
+          el.classList?.contains("iframe-screenshot-btn") ||
+          el.classList?.contains("iframe-record-btn"),
+      );
     if (!btn?._run) return;
     btn._lastPress = Date.now();
     btn._run();
@@ -2960,12 +2841,14 @@ observer.observe(document.body, { childList: true, subtree: true });
 onStorageChanged(
   [
     "screenshotsEnabled",
+    "recordingsEnabled",
     "videosEnabled",
     "assetsZipEnabled",
     "assetsCsvEnabled",
-    "autoMapEnabled",
+    "liveAdsetStatusEnabled",
   ],
-  () => {
+  (changes) => {
+    if (changes.liveAdsetStatusEnabled) stopLiveAdsetChecks();
     scheduleInject();
   },
 );

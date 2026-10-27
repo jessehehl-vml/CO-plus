@@ -1,6 +1,20 @@
 // background.js (MV3 service worker)
 // Per-tab progress + per-tab errors (screenshots + videos)
 
+importScripts("recording/recording-background.js");
+
+// Remove data left behind by removed features (default rate, auto-map).
+chrome.runtime.onInstalled.addListener(() => {
+  void (async () => {
+    const stored = await chrome.storage.local.get(null);
+    const keys = Object.keys(stored).filter((key) =>
+      key.startsWith("coPlusDefaultRate:"),
+    );
+    if (keys.length) await chrome.storage.local.remove(keys);
+    await chrome.storage.sync.remove(["defaultRateEnabled", "autoMapEnabled"]);
+  })().catch((error) => console.warn("[cleanup]", error));
+});
+
 const screenshotsByTab = new Map(); // tabId -> { total, completed, running, error }
 const videosByTab = new Map(); // tabId -> { total, completed, running, error, runId }
 
@@ -747,8 +761,6 @@ async function captureAdBlobNow(
 // -------------------------------
 // SIDE PANEL BEHAVIOR
 // -------------------------------
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.sidePanel
-    .setPanelBehavior({ openPanelOnActionClick: true })
-    .catch(() => {});
-});
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: false })
+  .catch(() => {});
