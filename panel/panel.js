@@ -23,7 +23,6 @@ const DEFAULTS = {
   individualReloadEnabled: true,
   addTemplateEnabled: true,
   impressionSimulatorEnabled: true,
-  liveAdsetStatusEnabled: true,
 };
 
 let wasScreenshotRunning = false;
@@ -76,7 +75,6 @@ const els = {
   indvReload: document.getElementById("individualReloadEnabled"),
   addTemplateEnabled: document.getElementById("addTemplateEnabled"), // <— FIXED NAME
   productionTagVerifier: document.getElementById("productionTagVerifierEnabled"),
-  liveAdsetStatus: document.getElementById("liveAdsetStatusEnabled"),
 };
 
 // --------------------
@@ -957,8 +955,6 @@ document.addEventListener("DOMContentLoaded", () => {
       els.addTemplateEnabled.checked = !!settings.addTemplateEnabled;
     if (els.productionTagVerifier)
       els.productionTagVerifier.checked = !!settings.impressionSimulatorEnabled;
-    if (els.liveAdsetStatus)
-      els.liveAdsetStatus.checked = !!settings.liveAdsetStatusEnabled;
   });
 
   els.sEnabled?.addEventListener("change", (e) => {
@@ -991,8 +987,5 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   els.productionTagVerifier?.addEventListener("change", (e) => {
     chrome.storage.sync.set({ impressionSimulatorEnabled: e.target.checked });
-  });
-  els.liveAdsetStatus?.addEventListener("change", (e) => {
-    chrome.storage.sync.set({ liveAdsetStatusEnabled: e.target.checked });
   });
 });

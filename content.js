@@ -47,7 +47,6 @@ const STORAGE_DEFAULTS = {
   individualReloadEnabled: true,
   addTemplateEnabled: true,
   impressionSimulatorEnabled: true,
-  liveAdsetStatusEnabled: true,
 };
 
 const API = {
@@ -198,251 +197,6 @@ function getIdsFromUrl() {
 
   const [, agencyId, advertiserId, campaignId, adsetId] = match;
   return { agencyId, advertiserId, campaignId, adsetId };
-}
-
-const liveAdsetChecks = new Map();
-
-function removeLiveAdsetStatus() {
-  document.getElementById("co-plus-live-adsets")?.remove();
-  document.querySelectorAll(".co-plus-delivery-replaced").forEach((cell) => {
-    cell.classList.remove("co-plus-delivery-replaced");
-  });
-  document.querySelectorAll(".co-plus-live-adset-status").forEach((badge) => {
-    badge.parentElement?.classList.remove("co-plus-delivery-cell");
-    badge.remove();
-  });
-}
-
-function stopLiveAdsetChecks() {
-  removeLiveAdsetStatus();
-  for (const check of liveAdsetChecks.values()) check.controller.abort();
-  liveAdsetChecks.clear();
-}
-
-function getLiveAdsetContext() {
-  const match = location.pathname.match(
-    /^\/(\d+)\/advertiser\/(\d+)\/campaign\/(\d+)(?:\/adset\/(\d+))?(?:\/|$)/,
-  );
-  if (!match) return null;
-  const [, agencyId, advertiserId, campaignId, adsetId] = match;
-  return { agencyId, advertiserId, campaignId, adsetId };
-}
-
-function getLiveAdsetDates(now = new Date()) {
-  const end = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  );
-  const start = new Date(end.getTime() - 86400000);
-  return {
-    startDate: start.toISOString().slice(0, 10),
-    endDate: end.toISOString().slice(0, 10),
-  };
-}
-
-async function fetchLiveAdsets(context, dates, signal) {
-  let candidates;
-  if (context.adsetId) {
-    const response = await apiFetch(`${API.adsets2}/${context.adsetId}`, {
-      signal,
-    });
-    candidates = [await response.json()];
-  } else {
-    const url = new URL(API.adsets2);
-    url.searchParams.set(
-      "filters",
-      JSON.stringify({ campaignId: Number(context.campaignId) }),
-    );
-    url.searchParams.set("embed", JSON.stringify(["template_revisions"]));
-    const response = await apiFetch(url.toString(), { signal });
-    candidates = await response.json();
-    if (!Array.isArray(candidates))
-      throw new Error("Unexpected campaign adset response");
-  }
-  const adsets = candidates.filter((adset) => adset.archived === false);
-  const results = new Array(adsets.length);
-  let nextIndex = 0;
-  async function worker() {
-    while (nextIndex < adsets.length && !signal?.aborted) {
-      const index = nextIndex++;
-      const adset = adsets[index];
-      try {
-        const url = new URL(
-          `https://api.lemonpi.io/analytics/v1/adset-insights/${adset.id}/stats`,
-        );
-        url.searchParams.set("start_date", dates.startDate);
-        url.searchParams.set("end_date", dates.endDate);
-        const response = await apiFetch(url.toString(), { signal });
-        const data = await response.json();
-        const impressions = data.impressions;
-        if (!Number.isSafeInteger(impressions) || impressions < 0) {
-          throw new Error("Impression total unavailable");
-        }
-        results[index] = {
-          id: adset.id,
-          name: adset.name,
-          impressions,
-          status: impressions > 1000 ? "Live" : "Not live",
-        };
-      } catch (error) {
-        results[index] = {
-          id: adset.id,
-          name: adset.name,
-          impressions: null,
-          status: "Unknown",
-          error: error.message,
-        };
-      }
-    }
-  }
-  await Promise.all(
-    Array.from({ length: Math.min(3, adsets.length) }, () => worker()),
-  );
-  return results;
-}
-
-function renderLiveAdsetStatus(context, dates, check) {
-  const targets = context.adsetId
-    ? [document.querySelector("h1")].filter(Boolean).map((heading) => ({
-        parent: heading.parentElement,
-        heading,
-        id: context.adsetId,
-      }))
-    : Array.from(document.querySelectorAll('[role="row"][data-id]'))
-        .map((row) => ({
-          parent: row.querySelector('[role="gridcell"][data-field="status"]'),
-          id: row.getAttribute("data-id"),
-        }))
-        .filter((target) => target.parent);
-  for (const { parent, heading, id } of targets) {
-    const result = check.results?.get(String(id));
-    let badge = parent.querySelector(".co-plus-live-adset-status");
-    if (check.results && !result) {
-      badge?.remove();
-      parent.classList.remove("co-plus-delivery-cell");
-      parent.classList.remove("co-plus-delivery-replaced");
-      continue;
-    }
-    if (!context.adsetId)
-      parent.classList.toggle(
-        "co-plus-delivery-replaced",
-        Boolean(check.showDelivery),
-      );
-    if (!check.showDelivery) {
-      badge?.remove();
-      badge = null;
-    } else if (!badge) {
-      badge = document.createElement("span");
-      badge.className = "co-plus-live-adset-status";
-      if (heading) {
-        badge.classList.add("co-plus-delivery-title");
-        heading.after(badge);
-      } else parent.appendChild(badge);
-      if (!context.adsetId) parent.classList.add("co-plus-delivery-cell");
-    }
-    const status = result?.status || (check.error ? "Unknown" : "Checking...");
-    const day = `${dates.startDate} (UTC)`;
-    const tooltip =
-      result?.error || check.error
-        ? `Delivery unknown: ${result?.error || check.error}`
-        : !result
-          ? "Checking impressions..."
-          : `${status === "Live" ? "Live: more than 1,000" : "Not live: 1,000 or fewer"} impressions in the last full UTC day.\n${result.impressions.toLocaleString()} impressions on ${day}`;
-    if (badge && badge.textContent !== status) badge.textContent = status;
-    if (badge && badge.dataset.tooltip !== tooltip) {
-      badge.dataset.tooltip = tooltip;
-      badge.setAttribute("aria-label", `${status}. ${tooltip}`);
-      badge.tabIndex = 0;
-    }
-    if (badge && badge.dataset.status !== status) badge.dataset.status = status;
-    if (!context.adsetId)
-      parent.classList.toggle("co-plus-delivery-cell", Boolean(badge));
-  }
-}
-
-function wireDeliveryTooltip() {
-  let tip = null;
-  const hide = () => tip?.remove();
-  const show = (event) => {
-    const badge = event.target.closest?.(".co-plus-live-adset-status");
-    if (!badge?.dataset.tooltip) return;
-    tip ||= Object.assign(document.createElement("div"), {
-      className: "co-plus-tooltip",
-      role: "tooltip",
-    });
-    tip.textContent = badge.dataset.tooltip;
-    document.body.appendChild(tip);
-    const rect = badge.getBoundingClientRect();
-    const width = tip.offsetWidth;
-    tip.style.left = `${Math.max(4, Math.min(innerWidth - width - 4, rect.left + rect.width / 2 - width / 2))}px`;
-    tip.style.top = `${rect.bottom + 8}px`;
-  };
-  document.addEventListener("mouseover", show);
-  document.addEventListener("focusin", show);
-  document.addEventListener("mouseout", (event) => {
-    if (event.target.closest?.(".co-plus-live-adset-status")) hide();
-  });
-  document.addEventListener("focusout", hide);
-  addEventListener("scroll", hide, true);
-}
-wireDeliveryTooltip();
-
-async function injectLiveAdsetStatus() {
-  const context = getLiveAdsetContext();
-  if (!context) {
-    removeLiveAdsetStatus();
-    return;
-  }
-  const { liveAdsetStatusEnabled } = await storageGet({
-    liveAdsetStatusEnabled: STORAGE_DEFAULTS.liveAdsetStatusEnabled,
-  });
-  if (!liveAdsetStatusEnabled) {
-    stopLiveAdsetChecks();
-    return;
-  }
-  const current = getLiveAdsetContext();
-  if (
-    current?.advertiserId !== context.advertiserId ||
-    current?.campaignId !== context.campaignId ||
-    current?.adsetId !== context.adsetId
-  )
-    return;
-  document.getElementById("co-plus-live-adsets")?.remove();
-  const dates = getLiveAdsetDates();
-  const key = `${context.advertiserId}:${context.campaignId}:${context.adsetId || "all"}:${dates.startDate}`;
-  let check = liveAdsetChecks.get(key);
-  if (!check || Date.now() - check.createdAt > 300000) {
-    check?.controller.abort();
-    const controller = new AbortController();
-    check = { createdAt: Date.now(), controller, results: null, error: null };
-    check.promise = fetchLiveAdsets(context, dates, controller.signal).then(
-      (results) => {
-        check.results = new Map(
-          results.filter(Boolean).map((result) => [String(result.id), result]),
-        );
-      },
-      (error) => {
-        check.error = error.message;
-      },
-    );
-    liveAdsetChecks.set(key, check);
-    if (liveAdsetChecks.size > 20) {
-      const oldest = liveAdsetChecks.keys().next().value;
-      liveAdsetChecks.get(oldest).controller.abort();
-      liveAdsetChecks.delete(oldest);
-    }
-  }
-  check.showDelivery = liveAdsetStatusEnabled;
-  renderLiveAdsetStatus(context, dates, check);
-  if (!check.results && !check.error) await check.promise;
-  const latest = getLiveAdsetContext();
-  if (
-    liveAdsetChecks.get(key) !== check ||
-    latest?.advertiserId !== context.advertiserId ||
-    latest?.campaignId !== context.campaignId ||
-    latest?.adsetId !== context.adsetId
-  )
-    return;
-  renderLiveAdsetStatus(context, dates, check);
 }
 
 function isTokenExpired(token, skewSeconds = 30) {
@@ -3107,7 +2861,6 @@ const scheduleInject = debounce(
     try {
       await injectIframeButtons();
       await injectButtons();
-      void injectLiveAdsetStatus();
     } catch (err) {
       const msg = err?.message || String(err);
 
@@ -3160,12 +2913,8 @@ onStorageChanged(
     "assetsZipEnabled",
     "assetsCsvEnabled",
     "impressionSimulatorEnabled",
-    "liveAdsetStatusEnabled",
   ],
-  (changes) => {
-    if (changes.liveAdsetStatusEnabled) stopLiveAdsetChecks();
-    scheduleInject();
-  },
+  () => scheduleInject(),
 );
 // Initial run
 scheduleInject();

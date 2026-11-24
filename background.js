@@ -3,7 +3,8 @@
 
 importScripts("recording/recording-background.js");
 
-// Remove data left behind by removed features (default rate, auto-map).
+// Remove data left behind by removed features (default rate, auto-map,
+// adset delivery status).
 chrome.runtime.onInstalled.addListener(() => {
   void (async () => {
     const stored = await chrome.storage.local.get(null);
@@ -11,7 +12,11 @@ chrome.runtime.onInstalled.addListener(() => {
       key.startsWith("coPlusDefaultRate:"),
     );
     if (keys.length) await chrome.storage.local.remove(keys);
-    await chrome.storage.sync.remove(["defaultRateEnabled", "autoMapEnabled"]);
+    await chrome.storage.sync.remove([
+      "defaultRateEnabled",
+      "autoMapEnabled",
+      "liveAdsetStatusEnabled",
+    ]);
   })().catch((error) => console.warn("[cleanup]", error));
 });
 

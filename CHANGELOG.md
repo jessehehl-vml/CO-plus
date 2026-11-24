@@ -8,6 +8,10 @@ The strategy checker is still in beta.
 
 - Strategy checker sample counts now default to 1 and accept values from 1 to 100. A maximum of 1 performs routing checks only, without additional variant sampling or missing-variant warnings.
 
+### Removed
+
+- The Adset delivery status feature: Live / Not live badges on campaign and adset pages, their tooltip, and the **Other** switch. Its stored setting is deleted on update.
+
 ## 1.4 - 2026-11-20
 
 ### Added

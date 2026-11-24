@@ -44,7 +44,7 @@ Follow these steps to install the extension in Chrome:
   - **Screenshots**
   - **Recordings (MP4/H.264)**
   - **Download**
-  - **Other:** Assets bulk download, Assets CSV export, Add template, Individual reload, Strategy checker and Adset delivery status. Each description in the panel says which page the feature runs on.
+  - **Other:** Assets bulk download, Assets CSV export, Add template, Individual reload and Strategy checker. Each description in the panel says which page the feature runs on.
 
 ---
 
@@ -171,19 +171,7 @@ Record rendered display creatives as **MP4 videos** for review or use in PowerPo
 
 ---
 
-### 8. Other – Adset Delivery Status
-
-Campaign pages replace the existing Status badges with delivery indicators for non-archived adsets while delivery status is enabled. Adset pages show the current adset's delivery indicator directly after its title; the page's menu stays on the right.
-
-- Enable or disable it in the side panel under **Other > Adset delivery status**. Disabling it restores the original Status content and removes delivery indicators.
-- **Live** means more than 1,000 impressions in the previous complete UTC calendar day.
-- Hover over (or tab to) an indicator for a tooltip explaining why it is Live or Not live, with the impression count and date. This date is independent of the campaign table's selected date range.
-- Exactly 1,000 impressions or fewer is **Not live**. Failed requests or unavailable totals show **Unknown**.
-- Totals come from the adset analytics stats endpoint, not the top-10 variant endpoint.
-- Checks are reused for five minutes within the page session, with at most three analytics requests in flight.
-- Delivery checks never create reports.
-
-### 9. Strategy checker (beta)
+### 8. Strategy checker (beta)
 
 **The strategy checker is still in beta.**
 
