@@ -1,13 +1,54 @@
 # Changelog
 
-## Unreleased
+## 1.5 - 2026-11-24
+
+The strategy checker is still in beta.
+
+### Changed
+
+- Strategy checker sample counts now default to 1 and accept values from 1 to 100. A maximum of 1 performs routing checks only, without additional variant sampling or missing-variant warnings.
+
+## 1.4 - 2026-11-20
+
+### Added
+
+- Production-tag verification for every feed line ID and configured ad size in one sequential run, with offscreen tag execution, and feed comparison based on the returned content.
+- Production-tag content is matched against all feed variants to identify cross-audience serves; the summary compares each served variant with its line's feed-expected set.
+- Expandable production-tag evidence shows returned content values, per-variant field matches, differences, and missing feed columns. Unique partial candidates are labeled as unconfirmed.
+- The strategy checker has two modes, Analyze strategy and Run tags, with controls on the left and results on the right.
+- Production tag runs show live progress: step, progress bar, current tag, running counts, and elapsed time.
+- Each production tag result shows the signals the tag actually sent (e.g. placement ID and postal code) and flags any simulated signal that was not sent.
+- Production tag results start with a summary verdict on whether served variants match the strategy.
+- Date & Time outcomes are verified by simulating a local time inside each time-of-day range; overlapping or identical sibling ranges are flagged.
+- Multi-variant strategy nodes can be sampled until every assigned variant is served (maximum 1 by default, configurable up to 100), with observed variant counts and percentages per strategy node, size, and time (pooling the line IDs that reach each node). A maximum of 1 performs routing checks only.
+
+### Changed
+
+- Production tags for a strategy branch (for example one `dsp-placementid`) run only at the ad sizes that branch's variants use. Placement IDs are no longer tested at sizes they never serve, which made every tag return the root fallback variant.
+- Lookup feeds (line ID → audience, without variant rows) are supported: variants are read from the adset's content feed, joined on the strategy's targeting column (for example `audience`). The variant ID column is detected from the strategy's variant IDs. If no feed contains them, the strategy checker shows an error, because served variants cannot be identified.
+- The new tab now loads and visualizes the strategy before revealing production-tag controls; impression simulation and results have been removed.
+- The feature is renamed **Strategy checker** (adset button, extension setting, and page title).
+- Strategies with repeated copies of the same dynamic feed (for example one per DSP placement) and uploaded CSV feeds (`assets.lemonpi.io`) now load. When the feed is not keyed on the DSP line ID, or the strategy branches on another DSP signal, the strategy analysis is shown read-only and tag runs are disabled with the reason.
+- Tag runs support DSP signal branches (for example placement ID) and postcode-keyed feeds: each placement × outcome is run once with a postcode from the mapping feed, sent as `location.postal-code` context.
+- The strategy analysis starts with an overall summary: total outcomes not matching the feed, affected paths, and outcomes that mismatch under every path.
+- Strategy analysis outcomes can be filtered by status, path (for example placement ID), and outcome name or variant ID.
+- Tag verification always runs all feed line IDs and no longer displays the rendered creative.
 
 ### Fixed
 
+- Feed columns renamed on import (for example `Line Item IDs (AD GroupID)` → `Line_Item_IDs_AD_GroupID`) are now resolved using the feed's column mappings.
+- Production-tag results now read the content object from the sandbox response envelope before matching it to feed rows.
+
+## 1.3 - 2026-11-20
+
+### Fixed
+
+- The Choreograph content script no longer fails to load due to an unsupported ES module import, restoring injected extension features.
 - Recordings no longer hang on "Finalizing" while another app (such as a macOS screen recorder) holds the hardware H.264 encoder. A stalled finalization is cancelled and retried with Chrome's software encoder; an untrimmed recording falls back to the unprocessed MP4.
 
 ### Added
 
+- Decision-tree impression simulator with an audience-branch overview, feed/strategy comparison, root fallback, and non-applying mismatch suggestions; its button can be enabled or disabled under **Other**.
 - **Download PPTX** in the Recordings tab after a batch finishes. It builds a 16:9 PowerPoint file locally with one slide per recording, following the storyboard template: a "Banner format: WxH" label at the top left, a "*Hover over image for animation control bar" hint at the bottom left, and the embedded MP4 enlarged up to 2x to fill the remaining space, with its first frame as the poster image.
 
 ## 1.2 - 2026-10-21

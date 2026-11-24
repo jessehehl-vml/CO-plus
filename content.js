@@ -46,6 +46,7 @@ const STORAGE_DEFAULTS = {
 
   individualReloadEnabled: true,
   addTemplateEnabled: true,
+  impressionSimulatorEnabled: true,
   liveAdsetStatusEnabled: true,
 };
 
@@ -611,6 +612,269 @@ async function fetchAdVariants({ onProgress } = {}) {
 
   return items;
 }
+
+function getDecisionTreeSummaries(payload) {
+  const candidates = [
+    payload,
+    payload?.data,
+    payload?.trees,
+    payload?.["decision-trees"],
+    payload?.data?.trees,
+    payload?.data?.["decision-trees"],
+    payload?.data?.items,
+  ];
+  return candidates.find(Array.isArray) || [];
+}
+
+function findFeedRecord(payload, feedId) {
+  const pending = [payload];
+  const seen = new Set();
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      pending.push(...value);
+      continue;
+    }
+
+    const id = value.id ?? value["feed-id"] ?? value.feedId;
+    if (id != null && String(id) === String(feedId)) return value;
+    pending.push(...Object.values(value));
+  }
+  return null;
+}
+
+// Feeds uploaded as files are stored as CSVs on the LemonPI asset host.
+function isUploadedFeedCsv(url) {
+  return (
+    url.protocol === "https:" &&
+    url.hostname === "assets.lemonpi.io" &&
+    url.pathname.endsWith(".csv")
+  );
+}
+
+// Prefers a published Google Sheet; otherwise falls back to an uploaded CSV.
+function findFeedCsvUrl(value) {
+  const pending = [value];
+  const seen = new Set();
+  let uploadedCsvUrl = null;
+  while (pending.length) {
+    const item = pending.pop();
+    if (!item || typeof item !== "object" || seen.has(item)) continue;
+    seen.add(item);
+    if (Array.isArray(item)) {
+      pending.push(...item);
+      continue;
+    }
+
+    for (const nested of Object.values(item)) {
+      if (typeof nested === "string") {
+        try {
+          const url = new URL(nested);
+          if (
+            url.protocol === "https:" &&
+            url.hostname === "docs.google.com" &&
+            url.pathname.startsWith("/spreadsheets/d/") &&
+            url.pathname.endsWith("/pub") &&
+            url.searchParams.get("output") === "csv"
+          ) {
+            return url.href;
+          }
+          if (!uploadedCsvUrl && isUploadedFeedCsv(url)) uploadedCsvUrl = url.href;
+        } catch {
+          // Ignore non-URL feed configuration values.
+        }
+      } else if (nested && typeof nested === "object") {
+        pending.push(nested);
+      }
+    }
+  }
+  return uploadedCsvUrl;
+}
+
+async function loadFeedRecord(advertiserId, feedId) {
+  const response = await apiFetch(
+    `https://api.lemonpi.io/advertisers/${advertiserId}/feeds/` +
+      encodeURIComponent(feedId),
+  );
+  return findFeedRecord(await response.json(), feedId);
+}
+
+// Sheet headers can be renamed on import; the tree refers to the "to" key.
+function getFeedMappings(record) {
+  return (Array.isArray(record?.mappings) ? record.mappings : [])
+    .filter(
+      (mapping) =>
+        typeof mapping?.from === "string" && typeof mapping?.to === "string",
+    )
+    .map(({ from, to }) => ({ from, to }));
+}
+
+function getSimulatorTreeNodes(tree) {
+  if (!Array.isArray(tree.nodes)) throw new Error("Decision tree has no nodes.");
+  return tree.nodes.map((node) => ({
+    id: node.id,
+    "parent-id": node["parent-id"],
+    type: node.type,
+    label: node.label,
+    targeting: node.targeting,
+    "ad-variants": (node["ad-variants"] || []).map((variant) => ({
+      "content-id": variant["content-id"],
+      "ad-formats": (variant["ad-formats"] || []).map((format) => ({
+        width: format.width,
+        height: format.height,
+      })),
+    })),
+  }));
+}
+
+function getDynamicFeedContext(tree) {
+  const nodes = tree?.nodes;
+  if (!Array.isArray(nodes)) throw new Error("Decision tree has no nodes.");
+
+  const feedNodes = nodes.filter((node) => node.type === "dynamic-feed");
+  if (!feedNodes.length) {
+    throw new Error("The strategy has no dynamic feed node.");
+  }
+
+  const contexts = feedNodes.map((feedNode) => {
+    const context = (feedNode.targeting?.context || []).find(
+      (item) => item?.param?.["feed-id"] != null,
+    );
+    const inputField = context?.param?.data?.in?.[0]?.to;
+    const valueField = context?.["value-column"];
+    if (!context || !inputField || !valueField) {
+      throw new Error("The dynamic feed is missing its input or value-column mapping.");
+    }
+    return {
+      feedId: String(context.param["feed-id"]),
+      alias: context.alias || `feed-${context.param["feed-id"]}`,
+      inputField,
+      valueField,
+    };
+  });
+  const signature = (context) => JSON.stringify(context);
+  if (contexts.some((context) => signature(context) !== signature(contexts[0]))) {
+    throw new Error(
+      `The strategy uses ${feedNodes.length} dynamic feed nodes with different ` +
+        "feeds or mappings; only repeated copies of the same feed are supported.",
+    );
+  }
+
+  return { feedNodeId: String(feedNodes[0].id), ...contexts[0] };
+}
+
+async function loadDecisionSimulatorData() {
+  const ids = getIdsFromUrl();
+  if (!ids) throw new Error("Open the strategy checker from an adset's Ad variants page.");
+
+  const treeListUrl =
+    `${API.contentBuild}/advertisers/${ids.advertiserId}/adsets/${ids.adsetId}/decision-trees`;
+  const treeListResponse = await apiFetch(treeListUrl);
+  const treeList = getDecisionTreeSummaries(await treeListResponse.json());
+  const publishedTrees = treeList.filter(
+    (tree) => String(tree.status || "").toLowerCase() === "published",
+  );
+  const availableTrees =
+    publishedTrees.length > 0
+      ? publishedTrees
+      : treeList.length === 1
+        ? treeList
+        : [];
+  if (!availableTrees.length) {
+    throw new Error("No published decision tree was found for this adset.");
+  }
+
+  availableTrees.sort((a, b) => {
+    const updatedAt = (tree) =>
+      Date.parse(tree["updated-at"] || tree.updatedAt || tree["created-at"]) || 0;
+    return updatedAt(b) - updatedAt(a);
+  });
+  const treeId =
+    availableTrees[0].id ?? availableTrees[0]["decision-tree-id"];
+  if (treeId == null) throw new Error("Published decision tree has no ID.");
+
+  const treeUrl =
+    `${API.contentBuild}/advertisers/${ids.advertiserId}/adsets/${ids.adsetId}/decision-trees/${treeId}`;
+  const treeResponse = await apiFetch(treeUrl);
+  const treePayload = await treeResponse.json();
+  const tree = Array.isArray(treePayload?.data?.nodes)
+    ? treePayload.data
+    : treePayload;
+  const feedContext = getDynamicFeedContext(tree);
+
+  if (!/^\d+$/.test(feedContext.feedId)) {
+    throw new Error(`Dynamic feed ID "${feedContext.feedId}" is not numeric.`);
+  }
+  const feedRecord = await loadFeedRecord(ids.advertiserId, feedContext.feedId);
+  if (!feedRecord) {
+    throw new Error(`Could not find dynamic feed ${feedContext.feedId}.`);
+  }
+  const sourceUrl = findFeedCsvUrl(feedRecord);
+  if (!sourceUrl) {
+    throw new Error(
+      "This prototype supports published Google Sheets and uploaded CSV feeds.",
+    );
+  }
+
+  // A lookup feed only maps line IDs to audiences; the adset's own content
+  // feed holds the variant rows used to identify served variants.
+  let contentFeed = null;
+  try {
+    const adsetResponse = await apiFetch(`${API.adsets2}/${ids.adsetId}`);
+    const adsetFeedId = String((await adsetResponse.json())?.feedId ?? "");
+    if (/^\d+$/.test(adsetFeedId) && adsetFeedId !== feedContext.feedId) {
+      const record = await loadFeedRecord(ids.advertiserId, adsetFeedId);
+      const contentSourceUrl = record && findFeedCsvUrl(record);
+      if (contentSourceUrl) {
+        contentFeed = {
+          id: adsetFeedId,
+          name: record.name || record.label || "",
+          sourceUrl: contentSourceUrl,
+          mappings: getFeedMappings(record),
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("[strategy-checker] could not load the adset content feed:", error);
+  }
+
+  return {
+    adsetId: ids.adsetId,
+    tree: {
+      id: tree.id ?? treeId,
+      status: tree.status,
+      nodes: getSimulatorTreeNodes(tree),
+    },
+    feed: {
+      id: feedContext.feedId,
+      name: feedRecord.name || feedRecord.label || "",
+      sourceUrl,
+      mappings: getFeedMappings(feedRecord),
+    },
+    contentFeed,
+  };
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (
+    message?.action !== "loadDecisionSimulatorData" ||
+    !sender.url?.startsWith(chrome.runtime.getURL("simulator.html"))
+  ) {
+    return false;
+  }
+
+  loadDecisionSimulatorData()
+    .then((data) => sendResponse({ success: true, data }))
+    .catch((error) =>
+      sendResponse({
+        success: false,
+        error: error?.message || String(error),
+      }),
+    );
+  return true;
+});
 
 // =========================
 // 5) Tools: Screenshots
@@ -2486,6 +2750,26 @@ function removeRecordingButton() {
   if (!screenshotUI.btn) teardownScreenshotCountUpdater();
 }
 
+async function openProductionTagVerifier(event) {
+  const button = event.currentTarget;
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const response = await runtimeSend({
+      action: "openDecisionTreeSimulator",
+    });
+    if (!response?.success) {
+      throw new Error(response?.error || "Could not open the strategy checker.");
+    }
+  } catch (error) {
+    const message = error?.message || String(error);
+    console.error("[tag-verifier] could not open:", error);
+    showToast(`Could not open strategy checker: ${message}`);
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
 // 10.3 - inject buttons
 async function injectButtons() {
   const url = location.href;
@@ -2498,6 +2782,7 @@ async function injectButtons() {
     assetsZipEnabled,
     assetsCsvEnabled,
     addTemplateEnabled,
+    impressionSimulatorEnabled: tagVerifierEnabled,
   } = await storageGet({
     screenshotsEnabled: STORAGE_DEFAULTS.screenshotsEnabled,
     recordingsEnabled: STORAGE_DEFAULTS.recordingsEnabled,
@@ -2505,6 +2790,7 @@ async function injectButtons() {
     assetsZipEnabled: STORAGE_DEFAULTS.assetsZipEnabled,
     assetsCsvEnabled: STORAGE_DEFAULTS.assetsCsvEnabled,
     addTemplateEnabled: STORAGE_DEFAULTS.addTemplateEnabled,
+    impressionSimulatorEnabled: STORAGE_DEFAULTS.impressionSimulatorEnabled,
   });
   // ---------- Screenshot button (preview) ----------
   const isPreview = params.get("ad-variants-preview") === "true";
@@ -2590,6 +2876,34 @@ async function injectButtons() {
   const adVariantsButton = stack
     ? findButtonByTextIncludes("Manage ad variants", stack)
     : null;
+
+  const strategyTab = $$('[role="tablist"] [role="tab"]').find(
+    (tab) => tab.textContent.trim() === "Strategy",
+  );
+  const simulatorAnchor =
+    strategyTab || adVariantsButton || document.querySelector("h1");
+  if (
+    tagVerifierEnabled &&
+    RE.adVariantsPage.test(url) &&
+    !isPreview &&
+    simulatorAnchor
+  ) {
+    const simulatorButton = ensureButton({
+      id: "verify-production-tag-btn",
+      parent: simulatorAnchor.parentNode,
+      afterElement: simulatorAnchor,
+      className: "download-ads-btn",
+      text: `<span class="material-icons" aria-hidden="true">science</span>Strategy checker`,
+      onClick: openProductionTagVerifier,
+    });
+    if (simulatorButton.previousElementSibling !== simulatorAnchor) {
+      simulatorAnchor.insertAdjacentElement("afterend", simulatorButton);
+    }
+    simulatorButton.title = "Check the decision-tree strategy and production tags";
+    simulatorButton.setAttribute("aria-label", simulatorButton.title);
+  } else {
+    document.getElementById("verify-production-tag-btn")?.remove();
+  }
 
   if (!videosEnabled) {
     document.getElementById("download-videos-btn")?.remove();
@@ -2845,6 +3159,7 @@ onStorageChanged(
     "videosEnabled",
     "assetsZipEnabled",
     "assetsCsvEnabled",
+    "impressionSimulatorEnabled",
     "liveAdsetStatusEnabled",
   ],
   (changes) => {

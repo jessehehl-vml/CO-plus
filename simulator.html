@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Strategy checker - CO Plus</title>
+    <link rel="stylesheet" href="simulator.css" />
+  </head>
+  <body>
+    <main class="simulator">
+      <header class="page-header">
+        <p class="eyebrow">CO Plus</p>
+        <h1>Strategy checker</h1>
+        <p id="context" class="muted" role="status" aria-live="polite">
+          Loading strategy and feed…
+        </p>
+      </header>
+
+      <div id="tag-workspace" class="tag-workspace" hidden>
+        <div id="tag-sidebar" class="tag-sidebar">
+          <nav class="mode-options" aria-label="Strategy checker mode">
+            <button
+              id="mode-strategy"
+              class="mode-option"
+              type="button"
+              aria-controls="strategy-analysis"
+              aria-pressed="true"
+            >
+              <span class="mode-option-title">Analyze strategy</span>
+              <span id="strategy-flow" class="mode-option-detail"></span>
+            </button>
+            <button
+              id="mode-tags"
+              class="mode-option"
+              type="button"
+              aria-controls="tag-results"
+              aria-pressed="false"
+            >
+              <span class="mode-option-title">Run tags</span>
+              <span id="mode-tags-detail" class="mode-option-detail">
+                Run production tags for every line ID or outcome, size and simulated time.
+              </span>
+            </button>
+          </nav>
+
+          <section id="tag-verification" class="panel" hidden>
+            <h2>Run production tags</h2>
+            <p id="tag-run-summary" class="note"></p>
+            <label for="tag-size">Size</label>
+            <select id="tag-size">
+              <option value="all">All sizes</option>
+            </select>
+            <label for="tag-sample-count">Max samples per node</label>
+            <input
+              id="tag-sample-count"
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              value="1"
+              required
+            />
+            <button id="verify-tag" type="button" disabled>
+              Run all tags
+            </button>
+            <p id="tag-status" class="status" role="status" aria-live="polite"></p>
+          </section>
+        </div>
+
+        <section id="strategy-analysis" class="panel results" hidden>
+          <h2>Strategy analysis</h2>
+          <p id="strategy-analysis-flow" class="muted"></p>
+          <p id="tag-run-blocked" class="time-warning" role="note" hidden></p>
+          <p id="tag-time-warning" class="time-warning" role="alert" hidden></p>
+          <section id="strategy-totals" class="strategy-totals" aria-label="Overall result" hidden>
+            <strong id="strategy-totals-headline"></strong>
+            <ul id="strategy-totals-items"></ul>
+          </section>
+          <div class="strategy-filters" role="search" aria-label="Filter strategy outcomes">
+            <div class="strategy-filter">
+              <label for="strategy-filter-status">Status</label>
+              <select id="strategy-filter-status">
+                <option value="all">All statuses</option>
+                <option value="match">Matches feed</option>
+                <option value="mismatch">Mismatch</option>
+                <option value="missing">No feed rows</option>
+                <option value="fallback">Uses fallback</option>
+              </select>
+            </div>
+            <div id="strategy-filter-path-field" class="strategy-filter" hidden>
+              <label for="strategy-filter-path">Path</label>
+              <select id="strategy-filter-path">
+                <option value="all">All paths</option>
+              </select>
+            </div>
+            <div class="strategy-filter strategy-filter-search">
+              <label for="strategy-filter-search">Outcome</label>
+              <input
+                id="strategy-filter-search"
+                type="search"
+                placeholder="Search name or variant…"
+                autocomplete="off"
+              />
+            </div>
+          </div>
+          <p id="strategy-filter-count" class="muted strategy-filter-count"></p>
+          <div id="strategy-branches" class="strategy-branches"></div>
+        </section>
+
+        <section id="tag-results" class="panel results" hidden>
+          <p id="tag-results-empty" class="muted">
+            Confirm and run tags on the left to see results here.
+          </p>
+          <section id="tag-progress" class="tag-progress" aria-live="polite" hidden>
+            <div class="tag-progress-header">
+              <strong id="tag-progress-phase">Preparing…</strong>
+              <span id="tag-progress-count"></span>
+            </div>
+            <progress id="tag-progress-bar" max="1" value="0"></progress>
+            <p id="tag-progress-detail" class="note"></p>
+            <ul class="tag-progress-stats">
+              <li data-status="pass">
+                <span id="tag-progress-match">0</span> match strategy
+              </li>
+              <li data-status="fail">
+                <span id="tag-progress-outside">0</span> outside strategy
+              </li>
+              <li data-status="fail">
+                <span id="tag-progress-outside-feed">0</span> outside feed
+              </li>
+              <li data-status="warn">
+                <span id="tag-progress-unverified">0</span> unverified
+              </li>
+              <li><span id="tag-progress-elapsed">0:00</span> elapsed</li>
+            </ul>
+          </section>
+          <h2 id="tag-results-heading" hidden>Production tag results</h2>
+          <section id="tag-summary" class="tag-summary" hidden>
+            <h3 id="tag-summary-headline"></h3>
+            <ul id="tag-summary-items"></ul>
+          </section>
+          <section id="tag-distributions" class="tag-distributions" hidden>
+            <h3>Observed variant distribution</h3>
+            <div class="table-wrap">
+              <table id="tag-distributions-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Tag targets</th>
+                    <th scope="col">Size</th>
+                    <th scope="col" class="col-time">Time</th>
+                    <th scope="col">Strategy node</th>
+                    <th scope="col">Expected variants</th>
+                    <th scope="col" class="col-sample">Samples</th>
+                    <th scope="col">Observed</th>
+                  </tr>
+                </thead>
+                <tbody id="tag-distributions-body"></tbody>
+              </table>
+            </div>
+          </section>
+          <section id="tag-response-details" class="tag-response-details" hidden>
+            <h3>Individual tag responses</h3>
+            <div class="table-wrap">
+              <table id="tag-results-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Tag target</th>
+                    <th scope="col">Size</th>
+                    <th scope="col" class="col-time">Time</th>
+                    <th scope="col" class="col-sample">Sample</th>
+                    <th scope="col">Variant served</th>
+                    <th scope="col">Feed-expected variants</th>
+                    <th scope="col">Check</th>
+                  </tr>
+                </thead>
+                <tbody id="tag-results-body"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <div id="tag-runtime" class="tag-runtime" aria-hidden="true" hidden></div>
+      </div>
+    </main>
+    <script type="module" src="simulator.js"></script>
+  </body>
+</html>

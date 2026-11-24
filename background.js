@@ -92,6 +92,36 @@ function idleVideo(tabId) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const senderTabId = sender?.tab?.id ?? null;
 
+  if (msg?.action === "openDecisionTreeSimulator") {
+    const sourceUrl = sender?.tab?.url || "";
+    const sourceMatch = sourceUrl.match(
+      /^https:\/\/create\.choreograph\.com\/\d+\/advertiser\/(\d+)\/campaign\/(\d+)\/adset\/(\d+)\/ad-variants(?:[/?#]|$)/,
+    );
+    if (senderTabId == null || !sourceMatch) {
+      sendResponse({
+        success: false,
+        error: "Open the strategy checker from an adset's Ad variants page.",
+      });
+      return true;
+    }
+
+    const simulatorUrl = new URL(chrome.runtime.getURL("simulator.html"));
+    simulatorUrl.searchParams.set("sourceTabId", String(senderTabId));
+    simulatorUrl.searchParams.set("advertiserId", sourceMatch[1]);
+    simulatorUrl.searchParams.set("campaignId", sourceMatch[2]);
+    simulatorUrl.searchParams.set("adsetId", sourceMatch[3]);
+    chrome.tabs
+      .create({ url: simulatorUrl.href, active: true })
+      .then((tab) => sendResponse({ success: true, tabId: tab?.id }))
+      .catch((error) =>
+        sendResponse({
+          success: false,
+          error: error?.message || String(error),
+        }),
+      );
+    return true;
+  }
+
   // ============================
   // CAPTURE (screenshots)
   // ============================

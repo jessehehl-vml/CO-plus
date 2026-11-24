@@ -22,6 +22,7 @@ const DEFAULTS = {
   // other
   individualReloadEnabled: true,
   addTemplateEnabled: true,
+  impressionSimulatorEnabled: true,
   liveAdsetStatusEnabled: true,
 };
 
@@ -74,6 +75,7 @@ const els = {
   // other: options:
   indvReload: document.getElementById("individualReloadEnabled"),
   addTemplateEnabled: document.getElementById("addTemplateEnabled"), // <— FIXED NAME
+  productionTagVerifier: document.getElementById("productionTagVerifierEnabled"),
   liveAdsetStatus: document.getElementById("liveAdsetStatusEnabled"),
 };
 
@@ -953,6 +955,8 @@ document.addEventListener("DOMContentLoaded", () => {
       els.indvReload.checked = !!settings.individualReloadEnabled;
     if (els.addTemplateEnabled)
       els.addTemplateEnabled.checked = !!settings.addTemplateEnabled;
+    if (els.productionTagVerifier)
+      els.productionTagVerifier.checked = !!settings.impressionSimulatorEnabled;
     if (els.liveAdsetStatus)
       els.liveAdsetStatus.checked = !!settings.liveAdsetStatusEnabled;
   });
@@ -984,6 +988,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   els.addTemplateEnabled?.addEventListener("change", (e) => {
     chrome.storage.sync.set({ addTemplateEnabled: e.target.checked });
+  });
+  els.productionTagVerifier?.addEventListener("change", (e) => {
+    chrome.storage.sync.set({ impressionSimulatorEnabled: e.target.checked });
   });
   els.liveAdsetStatus?.addEventListener("change", (e) => {
     chrome.storage.sync.set({ liveAdsetStatusEnabled: e.target.checked });

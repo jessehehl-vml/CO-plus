@@ -1,6 +1,6 @@
 {
   "name": "CO Plus",
-  "version": "1.2",
+  "version": "1.5",
   "description": "This Chrome Extension content script adds tools and features to Choreograph Creative Optimizations, settings can be changed via the side panel.",
   "manifest_version": 3,
   "minimum_chrome_version": "116",
@@ -27,8 +27,7 @@
     },
     {
       "matches": ["https://create.choreograph.com/*"],
-      "js": ["content.js"],
-      "type": "module"
+      "js": ["content.js"]
     }
   ],
   "side_panel": {
@@ -52,6 +51,12 @@
     "https://templates.lemonpi.io/*",
     "<all_urls>"
   ],
+  "sandbox": {
+    "pages": ["tag-verifier-sandbox.html"]
+  },
+  "content_security_policy": {
+    "sandbox": "sandbox allow-scripts allow-forms allow-popups allow-modals; default-src 'none'; script-src 'self' 'unsafe-inline' https://creative-libraries.lemonpi.io https://content.lemonpi.io https://templates.lemonpi.io; connect-src https://content.lemonpi.io https://creative-content.lemonpi.io https://templates.lemonpi.io https://log.lemonpi.io; img-src https://assets.lemonpi.io https://content.lemonpi.io https://log.lemonpi.io data: blob:; style-src 'self' 'unsafe-inline' https://templates.lemonpi.io https://assets.lemonpi.io https://fonts.googleapis.com; font-src https://assets.lemonpi.io https://fonts.gstatic.com data:; frame-src 'self' https://templates.lemonpi.io https://creative-content.lemonpi.io data: blob:; object-src 'none'; base-uri 'none';"
+  },
   "web_accessible_resources": [
     {
       "resources": ["icons/icon40.png"],

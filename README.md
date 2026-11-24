@@ -44,7 +44,7 @@ Follow these steps to install the extension in Chrome:
   - **Screenshots**
   - **Recordings (MP4/H.264)**
   - **Download**
-  - **Other:** Assets bulk download, Assets CSV export, Add template, Individual reload and Adset delivery status. Each description in the panel says which page the feature runs on.
+  - **Other:** Assets bulk download, Assets CSV export, Add template, Individual reload, Strategy checker and Adset delivery status. Each description in the panel says which page the feature runs on.
 
 ---
 
@@ -182,5 +182,16 @@ Campaign pages replace the existing Status badges with delivery indicators for n
 - Totals come from the adset analytics stats endpoint, not the top-10 variant endpoint.
 - Checks are reused for five minutes within the page session, with at most three analytics requests in flight.
 - Delivery checks never create reports.
+
+### 9. Strategy checker (beta)
+
+**The strategy checker is still in beta.**
+
+1. On an adset's **Ad variants** page, click **Strategy checker** to open it in a new tab. If the button is unavailable, enable it under **Other** in the extension panel.
+2. Use **Analyze strategy** to review the strategy and feed comparison, or select **Run tags** to test tags.
+3. Choose **All sizes** or a single size. Set **Max samples per node** from 1 to 100 (default 1). At 1, the checker runs routing checks only; higher values allow additional variant sampling.
+4. Click **Run tags** and review the summary. Expand individual results to inspect the returned content and matching evidence. Unsupported strategies are analysis-only and show why tag runs are unavailable.
+
+**Caution:** Tag runs contact production services and may record real impressions or tracking events. Use care when running against live campaigns.
 
 ---
