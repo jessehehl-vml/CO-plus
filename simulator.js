@@ -11,10 +11,11 @@ import {
   getExpectedStrategyVariants,
   summarizeTagVerification,
   compareTagResultToFeed,
+  getClosestVariantId,
   parseCsv,
   applyFeedMappings,
-  findVariantIdColumn,
-  joinLookupAndContentFeeds,
+  getTagVerificationRows,
+  addStoredVariantContent,
   parseLineIds,
 } from "./simulator-core.mjs";
 
@@ -37,6 +38,8 @@ const strategyBranchesElement = document.getElementById("strategy-branches");
 const tagWorkspaceSection = document.getElementById("tag-workspace");
 const tagVerificationSection = document.getElementById("tag-verification");
 const tagSampleCountInput = document.getElementById("tag-sample-count");
+const tagAcceptClosestInput = document.getElementById("tag-accept-closest");
+let tagRun = null;
 const tagSizeSelect = document.getElementById("tag-size");
 const verifyTagButton = document.getElementById("verify-tag");
 const tagRunSummaryElement = document.getElementById("tag-run-summary");
@@ -193,45 +196,14 @@ async function loadTagVerificationData() {
     throw new Error(`Feed is missing required columns: ${missingFields.join(", ")}.`);
   }
 
-  // Served variants are identified by matching tag content against feed rows,
-  // so a feed with the tree's variant IDs is required.
-  let feedRows;
-  let contentFeed = null;
-  const lookupVariantColumn = findVariantIdColumn(lookupRows, data.tree);
-  if (lookupVariantColumn) {
-    feedRows = lookupRows.map((row) => ({
-      ...row,
-      variant_id: String(row[lookupVariantColumn] ?? "").trim(),
-    }));
-  } else if (data.contentFeed) {
-    contentFeed = data.contentFeed;
-    const contentRows = await fetchFeedRows(contentFeed);
-    const variantIdColumn = findVariantIdColumn(contentRows, data.tree);
-    const audienceColumn = [context.targetingColumn, context.valueField].find(
-      (column) => column && Object.hasOwn(contentRows[0] || {}, column),
-    );
-    if (!variantIdColumn || !audienceColumn) {
-      throw new Error(
-        `Cannot identify served variants: content feed ` +
-          `${contentFeed.name || contentFeed.id} has no ` +
-          (variantIdColumn
-            ? `audience column ("${context.targetingColumn || context.valueField}").`
-            : "column with the strategy's variant IDs."),
-      );
-    }
-    feedRows = joinLookupAndContentFeeds({
-      lookupRows,
-      contentRows,
-      context,
-      variantIdColumn,
-      audienceColumn,
-    });
-  } else {
-    throw new Error(
-      "Cannot identify served variants: the feed has no column with the " +
-        "strategy's variant IDs, and the adset has no content feed with one.",
-    );
-  }
+  const contentFeed = data.contentFeed ?? null;
+  const feedRows = getTagVerificationRows({
+    lookupRows,
+    contentRows: contentFeed ? await fetchFeedRows(contentFeed) : null,
+    context,
+    tree: data.tree,
+    contentFeedLabel: contentFeed?.name || contentFeed?.id,
+  });
 
   const lineIds = getFeedLineIds(lookupRows, context.inputField);
   if (!lineIds.length) {
@@ -254,6 +226,7 @@ async function loadTagVerificationData() {
   return {
     ...data,
     feedRows,
+    comparisonRows: addStoredVariantContent(feedRows, data.tree),
     contentFeed,
     context,
     tagRunBlockers,
@@ -719,30 +692,53 @@ function getScenarioLabel(scenario) {
   return scenario ? `${scenario.time} (${scenario.label})` : "Current time";
 }
 
-function renderTagResult(
-  { target, size, scenario },
-  sampleNumber,
-  response,
-  error = null,
-) {
-  const row = document.createElement("tr");
-  const match = compareTagResultToFeed(
+// The feed comparison is stored with the raw response so verdicts can be
+// re-evaluated (e.g. toggling closest-match acceptance) without rerunning tags.
+function createTagSample(request, sampleNumber, response, error = null, group = null) {
+  const { target, size, scenario } = request;
+  const timeLabel = scenario ? ` at ${scenario.time}` : "";
+  return {
+    request,
+    sampleNumber,
     response,
-    tagVerificationData.feedRows,
-    tagVerificationData.context.inputField,
-    tagVerificationData.context.valueField,
-  );
+    error,
+    group,
+    label:
+      `${target.label} (${size.width}×${size.height}${timeLabel}, ` +
+      `sample ${sampleNumber})`,
+    expectedVariants: getExpectedVariantsForRequest(request),
+    match: compareTagResultToFeed(
+      response,
+      tagVerificationData.comparisonRows,
+      tagVerificationData.context.inputField,
+      tagVerificationData.context.valueField,
+    ),
+  };
+}
+
+function evaluateTagSample(
+  { request: { target }, response, error, match },
+  acceptClosest = tagAcceptClosestInput.checked,
+) {
   const exactVariants = match.exactVariantIds;
   const partialVariants = match.partialVariantIds;
   const closest = match.candidates[0];
+  const closestId =
+    acceptClosest && !error && exactVariants.length !== 1
+      ? getClosestVariantId(match)
+      : null;
   const identifiedVariant =
     exactVariants.length === 1
       ? { id: exactVariants[0], exact: true }
-      : exactVariants.length === 0 && partialVariants.length === 1
-        ? { id: partialVariants[0], exact: false }
-        : null;
+      : closestId
+        ? { id: closestId, exact: true, closest: true }
+        : exactVariants.length === 0 && partialVariants.length === 1
+          ? { id: partialVariants[0], exact: false }
+          : null;
   const servedVariant =
-    identifiedVariant?.exact
+    identifiedVariant?.closest
+      ? `Closest match: ${closestId} (${closest.matches}/${closest.total} fields agree)`
+      : identifiedVariant?.exact
       ? identifiedVariant.id
       : exactVariants.length > 1
         ? `Ambiguous exact match: ${exactVariants.join(", ")}`
@@ -759,35 +755,59 @@ function renderTagResult(
           : response?.fallbackUsed
             ? "Fallback used; variant not verified"
             : "No feed variant could be compared";
-  const expectedFeedVariants = target.feedVariants;
   const matchesFeed =
     Boolean(identifiedVariant) &&
-    expectedFeedVariants.includes(identifiedVariant.id);
+    target.feedVariants.includes(identifiedVariant.id);
 
   let check = "Variant not verified";
-  if (identifiedVariant?.exact) {
+  let checkState = null;
+  if (identifiedVariant?.closest) {
+    check = matchesFeed
+      ? "Closest match in feed expectation"
+      : "Closest match outside feed expectation";
+    checkState = matchesFeed ? "match" : "mismatch";
+  } else if (identifiedVariant?.exact) {
     check = matchesFeed
       ? "Matches feed expectation"
       : "Outside feed expectation";
-    row.dataset.tagCheck = matchesFeed ? "match" : "mismatch";
+    checkState = matchesFeed ? "match" : "mismatch";
   } else if (identifiedVariant) {
     check = matchesFeed
       ? "Partial candidate in feed expectation (unconfirmed)"
       : "Partial candidate outside feed expectation (unconfirmed)";
-    row.dataset.tagCheck = "partial";
+    checkState = "partial";
   } else if (response?.fallbackUsed) {
     check = "Production fallback was used";
-    row.dataset.tagCheck = "mismatch";
+    checkState = "mismatch";
   }
 
+  return {
+    match,
+    servedVariant,
+    check,
+    checkState,
+    identified: Boolean(identifiedVariant),
+    exact: identifiedVariant?.exact || false,
+    closest: identifiedVariant?.closest || false,
+    matchesFeed,
+    variantId: identifiedVariant?.id || null,
+  };
+}
+
+function renderTagResult(sample) {
+  const { request, sampleNumber, response } = sample;
+  const { target, size, scenario } = request;
+  const outcome = evaluateTagSample(sample);
+  const row = document.createElement("tr");
+  if (outcome.checkState) row.dataset.tagCheck = outcome.checkState;
   appendCell(row, target.label);
   appendCell(row, `${size.width}×${size.height}`);
   appendCell(row, getScenarioLabel(scenario), "col-time");
   appendCell(row, String(sampleNumber), "col-sample");
   if (sampleNumber > 1) showResultColumn("sample");
   const variantCell = document.createElement("td");
-  variantCell.textContent = servedVariant;
-  variantCell.appendChild(createTagMatchEvidence(match));
+  variantCell.textContent = outcome.servedVariant;
+  variantCell.appendChild(createTagMatchEvidence(outcome.match));
   if (response?.requestContext) {
     const sent = Object.entries(response.requestContext)
       .filter(([key]) => !key.startsWith("$request."))
@@ -803,15 +823,103 @@ function renderTagResult(
     variantCell.appendChild(sentLine);
   }
   row.appendChild(variantCell);
-  appendCell(row, expectedFeedVariants.join(", ") || "—");
-  appendCell(row, check);
+  appendCell(row, target.feedVariants.join(", ") || "—");
+  appendCell(row, outcome.check);
   tagResultsBody.appendChild(row);
-  return {
-    identified: Boolean(identifiedVariant),
-    exact: identifiedVariant?.exact || false,
-    matchesFeed,
-    variantId: identifiedVariant?.id || null,
-  };
+  return row;
+}
+
+function getTagChecks() {
+  return (tagRun?.samples || []).map((sample) => {
+    const outcome = evaluateTagSample(sample);
+    return {
+      label: sample.label,
+      exact: outcome.exact,
+      closest: outcome.closest,
+      variantId: outcome.variantId,
+      expectedVariants: sample.expectedVariants,
+      feedVariants: sample.request.target.feedVariants,
+    };
+  });
+}
+
+function updateTagProgressCounts() {
+  const checks = getTagChecks();
+  const verified = checks.filter((check) => check.exact);
+  const matching = verified.filter((check) =>
+    check.expectedVariants.includes(check.variantId),
+  ).length;
+  tagProgressMatch.textContent = String(matching);
+  tagProgressOutside.textContent = String(verified.length - matching);
+  tagProgressOutsideFeed.textContent = String(
+    verified.filter((check) => !check.feedVariants.includes(check.variantId))
+      .length,
+  );
+  tagProgressUnverified.textContent = String(checks.length - verified.length);
+}
+
+// Routing samples join the strategy node of the variant they served; extra
+// samples belong to the node they were taken for.
+function groupTagSamplesByNode(samples) {
+  const nodes = new Map();
+  for (const sample of samples) {
+    let group = sample.group;
+    if (!group) {
+      const outcome = evaluateTagSample(sample);
+      if (!outcome.exact) continue;
+      group = getStrategyGroupForVariant(sample.request, outcome.variantId);
+      if (!group) continue;
+    }
+    if (!nodes.has(group)) {
+      nodes.set(group, { request: sample.request, requests: [], samples: [] });
+    }
+    const node = nodes.get(group);
+    if (!sample.group) node.requests.push(sample.request);
+    node.samples.push(sample);
+  }
+  return nodes;
+}
+
+function renderTagRunOutcome() {
+  const nodes = groupTagSamplesByNode(tagRun.samples);
+  tagDistributionsBody.replaceChildren();
+  tagDistributionsSection.hidden = true;
+  for (const [group, node] of nodes) renderTagDistribution(node, group);
+  renderTagSummary(
+    summarizeTagVerification({
+      checks: getTagChecks(),
+      nodes: [...nodes]
+        .filter(([group]) => group.multiVariant)
+        .map(([group, node]) => ({
+          label: getGroupLabel(group, node.request),
+          variants: group.variants,
+          observedVariantIds: node.samples
+            .map((sample) => evaluateTagSample(sample))
+            .filter((outcome) => outcome.exact)
+            .map((outcome) => outcome.variantId),
+        })),
+      sampleLimit: tagRun.requestedSamples,
+      warnings: tagVerificationData.timePlan.warnings,
+    }),
+  );
+}
+
+// Re-renders stored results with the current options, keeping open evidence.
+function rerenderTagRun() {
+  if (!tagRun?.samples.length) return;
+  const openDetails = [...tagResultsBody.rows].map((row) =>
+    [...row.querySelectorAll("details")].map((details) => details.open),
+  );
+  tagResultsBody.replaceChildren();
+  tagRun.samples.forEach((sample, index) => {
+    renderTagResult(sample)
+      .querySelectorAll("details")
+      .forEach((details, detailIndex) => {
+        details.open = openDetails[index]?.[detailIndex] ?? details.open;
+      });
+  });
+  updateTagProgressCounts();
+  if (tagRun.complete) renderTagRunOutcome();
 }
 
 function getStrategyGroupKey(size, scenario) {
@@ -884,8 +992,9 @@ function getStrategyGroupForVariant({ target, size, scenario }, variantId) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-function renderTagDistribution({ request, requests, outcomes }, group) {
+function renderTagDistribution({ request, requests, samples }, group) {
   const { size, scenario } = request;
+  const outcomes = samples.map((sample) => evaluateTagSample(sample));
   const counts = new Map(group.variants.map((variant) => [variant, 0]));
   let unmatched = 0;
   for (const outcome of outcomes) {
@@ -897,7 +1006,11 @@ function renderTagDistribution({ request, requests, outcomes }, group) {
   }
 
   const row = document.createElement("tr");
-  appendCell(row, [...new Set(requests.map(({ target }) => target.label))].join(", "));
+  const nodeRequests = requests.length ? requests : [request];
+  appendCell(
+    row,
+    [...new Set(nodeRequests.map(({ target }) => target.label))].join(", "),
+  );
   appendCell(row, `${size.width}×${size.height}`);
   appendCell(row, getScenarioLabel(scenario), "col-time");
   appendCell(row, group.audience ? `${group.audience} → ${group.path}` : group.path);
@@ -1007,7 +1120,7 @@ async function runProductionTagVerification() {
     table.dataset.hideTime = String(getTimeScenarios().every((s) => !s));
     table.dataset.hideSample = "true";
   }
-  const strategyChecks = [];
+  tagRun = { samples: [], requestedSamples, complete: false };
   let completedRequests = 0;
   tagResultsEmpty.hidden = true;
   tagProgressSection.hidden = false;
@@ -1033,19 +1146,7 @@ async function runProductionTagVerification() {
     tagProgressBar.max = Math.max(total, 1);
     tagProgressBar.value = completedRequests;
     tagProgressDetail.textContent = detail;
-    const verified = strategyChecks.filter((check) => check.exact);
-    const matching = verified.filter((check) =>
-      check.expectedVariants.includes(check.variantId),
-    ).length;
-    tagProgressMatch.textContent = String(matching);
-    tagProgressOutside.textContent = String(verified.length - matching);
-    tagProgressOutsideFeed.textContent = String(
-      verified.filter((check) => !check.feedVariants.includes(check.variantId))
-        .length,
-    );
-    tagProgressUnverified.textContent = String(
-      strategyChecks.length - verified.length,
-    );
+    updateTagProgressCounts();
     tagProgressElapsed.textContent = formatElapsed(Date.now() - startedAt);
   };
   const elapsedTimer = setInterval(() => {
@@ -1054,51 +1155,34 @@ async function runProductionTagVerification() {
   let currentPhase = `Step 1 of 2 · Routing check (0 of ${requests.length})`;
   updateProgress({ phase: currentPhase, detail: "Starting…" });
 
-  const runSample = async (request, sampleNumber, statusPrefix) => {
+  const runSample = async (request, sampleNumber, statusPrefix, group = null) => {
     const { target, size, scenario } = request;
-    const sizeLabel = `${size.width}×${size.height}`;
-    const timeLabel = scenario ? ` at ${scenario.time}` : "";
     const detail =
-      `${statusPrefix}${target.label} · ${sizeLabel}` +
+      `${statusPrefix}${target.label} · ${size.width}×${size.height}` +
       `${scenario ? ` · ${scenario.time}` : ""}…`;
     setTagStatus("Running production tags…");
     updateProgress({ phase: currentPhase, detail });
 
-    let outcome;
+    let response = null;
+    let error = null;
     try {
-      const result = await runProductionTag(request);
-      if (result.status < 200 || result.status >= 300) {
-        outcome = renderTagResult(
-          request,
-          sampleNumber,
-          result,
-          `Production content request failed (HTTP ${result.status}).`,
-        );
-      } else if (result.error) {
-        outcome = renderTagResult(request, sampleNumber, result, result.error);
-      } else {
-        outcome = renderTagResult(request, sampleNumber, result);
+      response = await runProductionTag(request);
+      if (response.status < 200 || response.status >= 300) {
+        error = `Production content request failed (HTTP ${response.status}).`;
+      } else if (response.error) {
+        error = response.error;
       }
-    } catch (error) {
-      outcome = renderTagResult(
-        request,
-        sampleNumber,
-        null,
-        error.message || String(error),
-      );
+    } catch (caught) {
+      error = caught.message || String(caught);
     }
 
-    strategyChecks.push({
-      label: `${target.label} (${sizeLabel}${timeLabel}, sample ${sampleNumber})`,
-      exact: outcome.exact,
-      variantId: outcome.variantId,
-      expectedVariants: getExpectedVariantsForRequest(request),
-      feedVariants: target.feedVariants,
-    });
+    const sample = createTagSample(request, sampleNumber, response, error, group);
+    tagRun.samples.push(sample);
+    renderTagResult(sample);
     completedRequests++;
     remainingUpperBound--;
     updateProgress({ phase: currentPhase });
-    return outcome;
+    return sample;
   };
 
   try {
@@ -1109,16 +1193,11 @@ async function runProductionTagVerification() {
       const request = requests[index];
       currentPhase =
         `Step 1 of 2 · Routing check (${index + 1} of ${requests.length})`;
-      const outcome = await runSample(request, 1, "Running ");
-      if (!outcome.exact) continue;
-      const group = getStrategyGroupForVariant(request, outcome.variantId);
-      if (!group) continue;
-      if (!nodeSamples.has(group)) {
-        nodeSamples.set(group, { request, requests: [], outcomes: [] });
-      }
-      const node = nodeSamples.get(group);
-      node.requests.push(request);
-      node.outcomes.push(outcome);
+      await runSample(request, 1, "Running ");
+    }
+    // Grouped after routing so the closest-match option can change mid-run.
+    for (const [group, node] of groupTagSamplesByNode(tagRun.samples)) {
+      nodeSamples.set(group, node);
     }
 
     const multiVariantNodes = [...nodeSamples].filter(
@@ -1128,7 +1207,8 @@ async function runProductionTagVerification() {
     // maximum is reached.
     const allVariantsServed = (group, node) => {
       const served = new Set(
-        node.outcomes
+        node.samples
+          .map((sample) => evaluateTagSample(sample))
           .filter((outcome) => outcome.exact)
           .map((outcome) => outcome.variantId),
       );
@@ -1139,14 +1219,14 @@ async function runProductionTagVerification() {
         sum +
         (allVariantsServed(group, node)
           ? 0
-          : Math.max(0, requestedSamples - node.outcomes.length)),
+          : Math.max(0, requestedSamples - node.samples.length)),
       0,
     );
     if (requestedSamples > 1) {
       for (let index = 0; index < multiVariantNodes.length; index++) {
         const [group, node] = multiVariantNodes[index];
         for (
-          let sampleNumber = node.outcomes.length + 1;
+          let sampleNumber = node.samples.length + 1;
           sampleNumber <= requestedSamples && !allVariantsServed(group, node);
           sampleNumber++
         ) {
@@ -1154,12 +1234,13 @@ async function runProductionTagVerification() {
           currentPhase =
             `Step 2 of 2 · Variant sampling (node ${index + 1} of ` +
             `${multiVariantNodes.length})`;
-          node.outcomes.push(
+          node.samples.push(
             await runSample(
               request,
               sampleNumber,
               `${group.audience ? `${group.audience} → ` : ""}${group.path} · ` +
                 `sample ${sampleNumber} (max ${requestedSamples}) · `,
+              group,
             ),
           );
         }
@@ -1171,7 +1252,7 @@ async function runProductionTagVerification() {
               sum +
               (allVariantsServed(nextGroup, nextNode)
                 ? 0
-                : Math.max(0, requestedSamples - nextNode.outcomes.length)),
+                : Math.max(0, requestedSamples - nextNode.samples.length)),
             0,
           );
         updateProgress({ phase: currentPhase });
@@ -1185,23 +1266,8 @@ async function runProductionTagVerification() {
         `${formatElapsed(Date.now() - startedAt)}.`,
     });
 
-    for (const [group, node] of nodeSamples) {
-      renderTagDistribution(node, group);
-    }
-    renderTagSummary(
-      summarizeTagVerification({
-        checks: strategyChecks,
-        nodes: multiVariantNodes.map(([group, node]) => ({
-          label: getGroupLabel(group, node.request),
-          variants: group.variants,
-          observedVariantIds: node.outcomes
-            .filter((outcome) => outcome.exact)
-            .map((outcome) => outcome.variantId),
-        })),
-        sampleLimit: requestedSamples,
-        warnings: tagVerificationData.timePlan.warnings,
-      }),
-    );
+    tagRun.complete = true;
+    renderTagRunOutcome();
     setTagStatus("");
   } catch (error) {
     showRunError(error);
@@ -1350,6 +1416,8 @@ function showRunError(error) {
   tagProgressDetail.textContent = `Error: ${message}`;
   setTagStatus(`Run failed: ${message}`, true);
 }
+
+tagAcceptClosestInput.addEventListener("change", rerenderTagRun);
 
 verifyTagButton.addEventListener("click", () => {
   runProductionTagVerification().catch((error) => {

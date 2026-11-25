@@ -178,6 +178,7 @@ Record rendered display creatives as **MP4 videos** for review or use in PowerPo
 1. On an adset's **Ad variants** page, click **Strategy checker** to open it in a new tab. If the button is unavailable, enable it under **Other** in the extension panel.
 2. Use **Analyze strategy** to review the strategy and feed comparison, or select **Run tags** to test tags.
 3. Choose **All sizes** or a single size. Set **Max samples per node** from 1 to 100 (default 1). At 1, the checker runs routing checks only; higher values allow additional variant sampling.
+   Select **Accept closest match** to check routing when served content differs slightly from the feed (for example, blank feed cells filled by template defaults). A tag without an exact match then counts as the variant with the most matching fields, unless another variant ties. The results and summary list these tags as closest matches. You can switch it on or off during or after a run; results update without rerunning tags.
 4. Click **Run tags** and review the summary. Expand individual results to inspect the returned content and matching evidence. Unsupported strategies are analysis-only and show why tag runs are unavailable.
 
 **Caution:** Tag runs contact production services and may record real impressions or tracking events. Use care when running against live campaigns.

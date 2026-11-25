@@ -4,9 +4,17 @@
 
 The strategy checker is still in beta.
 
+### Added
+
+- **Accept closest match** option for strategy checker tag runs. Tags without an exact content match count as the variant with the most matching fields (when no other variant ties), so routing can be checked even when content differs from the feed. Closest matches are labeled in results and counted in the summary. The option can be toggled during or after a run and re-evaluates the stored results without rerunning tags.
+
 ### Changed
 
 - Strategy checker sample counts now default to 1 and accept values from 1 to 100. A maximum of 1 performs routing checks only, without additional variant sampling or missing-variant warnings.
+
+### Fixed
+
+- Strategy checker prioritizes the adset's content feed for creative values, even when the strategy feed also contains variant IDs. The strategy feed supplies targeting and audience mappings. Creative fields whose names have no matching feed column (for example `consumerType` from `Consumer Type`) are matched to the feed column holding the same values. A mapped column with the field's own name always takes precedence, so a blank mapped cell is reported when the tag returns a value. Stored variant content fills only fields absent from the feed and never overrides feed values or blanks. Collections filled at serve time, such as product recommendations, are no longer compared.
 
 ### Removed
 

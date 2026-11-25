@@ -241,6 +241,17 @@ button:disabled {
 #tag-sample-count {
   display: block;
   max-width: 120px;
+  margin-bottom: 16px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.checkbox-label + .note {
+  margin-bottom: 16px;
 }
 
 #tag-size {

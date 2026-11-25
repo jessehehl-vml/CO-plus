@@ -104,11 +104,14 @@ export function compareTagResultToFeed(
     };
   }
 
+  // Collections (e.g. product recommendations) are filled at serve time and
+  // cannot be compared with feed or variant content.
   const contentEntries = Object.entries(content).filter(
     ([, item]) =>
       item &&
       typeof item === "object" &&
-      Object.hasOwn(item, "value"),
+      Object.hasOwn(item, "value") &&
+      (item.value === null || typeof item.value !== "object"),
   );
   const contentFields = contentEntries.map(([field, item]) => ({
     field,
@@ -228,6 +231,20 @@ export function compareTagResultToFeed(
       .filter((candidate) => candidate.compatible && !candidate.exact)
       .map((candidate) => candidate.variantId),
   };
+}
+
+// The best-ranked candidate, unless another candidate ties it or no field
+// agrees at all.
+export function getClosestVariantId(match) {
+  const [best, next] = match?.candidates || [];
+  if (!best || best.matches === 0) return null;
+  const tied =
+    next &&
+    next.exact === best.exact &&
+    next.compatible === best.compatible &&
+    next.matches === best.matches &&
+    next.compared === best.compared;
+  return tied ? null : best.variantId;
 }
 
 export function getDynamicFeedContext(tree) {
@@ -490,6 +507,156 @@ export function joinLookupAndContentFeeds({
       [context.valueField]: audience,
       [context.inputField]: [...(lineIdsByAudience.get(audience) || [])].join(","),
     };
+  });
+}
+
+export function getTagVerificationRows({
+  lookupRows,
+  contentRows = null,
+  context,
+  tree,
+  contentFeedLabel,
+}) {
+  if (contentRows !== null) {
+    const variantIdColumn = findVariantIdColumn(contentRows, tree);
+    const audienceColumn = [context.targetingColumn, context.valueField].find(
+      (column) => column && Object.hasOwn(contentRows[0] || {}, column),
+    );
+    if (!variantIdColumn || !audienceColumn) {
+      throw new Error(
+        `Cannot identify served variants: content feed ${contentFeedLabel} has no ` +
+          (variantIdColumn
+            ? `audience column ("${context.targetingColumn || context.valueField}").`
+            : "column with the strategy's variant IDs."),
+      );
+    }
+    return joinLookupAndContentFeeds({
+      lookupRows,
+      contentRows,
+      context,
+      variantIdColumn,
+      audienceColumn,
+    });
+  }
+
+  const variantIdColumn = findVariantIdColumn(lookupRows, tree);
+  if (!variantIdColumn) {
+    throw new Error(
+      "Cannot identify served variants: the feed has no column with the " +
+        "strategy's variant IDs, and the adset has no content feed with one.",
+    );
+  }
+  return lookupRows.map((row) => ({
+    ...row,
+    variant_id: String(row[variantIdColumn] ?? "").trim(),
+  }));
+}
+
+function getStoredVariantContent(variant) {
+  const stored = {};
+  for (const component of Object.values(variant?.components || {})) {
+    const content = component?.value?.content;
+    if (!content || typeof content !== "object" || Array.isArray(content)) continue;
+    for (const [field, item] of Object.entries(content)) {
+      const value = item?.value;
+      if (value === null || typeof value !== "object") {
+        stored[field] = String(value ?? "");
+      }
+    }
+  }
+  return stored;
+}
+
+const normalizeContentValue = (value) =>
+  String(value ?? "")
+    .normalize("NFC")
+    .replace(/\s+/g, " ")
+    .trim();
+const normalizeFieldName = (name) =>
+  String(name ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// Infers which feed column fills each creative field when names differ
+// (e.g. consumerType ← "Consumer Type", Gradient_300x250 ← gradient_300x250). A
+// column qualifies only if it equals the stored field value for every feed row
+// of every variant; a column with the same normalized name is preferred.
+// Value-only matches need at least two variants and a single candidate.
+export function inferCreativeFieldColumns(rows, contentsById) {
+  const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  const pairsByField = new Map();
+  for (const row of rows) {
+    const contents = contentsById.get(String(row.variant_id ?? "").trim());
+    if (!contents) continue;
+    const values = new Map();
+    for (const stored of contents.values()) {
+      for (const [field, value] of Object.entries(stored)) {
+        const normalized = normalizeContentValue(value);
+        values.set(
+          field,
+          values.has(field) && values.get(field) !== normalized ? null : normalized,
+        );
+      }
+    }
+    for (const [field, value] of values) {
+      if (value === null) continue;
+      if (!pairsByField.has(field)) pairsByField.set(field, []);
+      pairsByField.get(field).push({ row, value });
+    }
+  }
+
+  const aliases = new Map();
+  for (const [field, pairs] of pairsByField) {
+    const fits = (column) =>
+      pairs.every(
+        ({ row, value }) =>
+          Object.hasOwn(row, column) && normalizeContentValue(row[column]) === value,
+      );
+    // A column with the field's own name is the explicit feed mapping, so an
+    // alias is only inferred when the feed has no such column.
+    if (pairs.some(({ row }) => Object.hasOwn(row, field))) continue;
+    // Feed mappings duplicate a sheet header under its mapped key, so
+    // candidates holding identical values in every row count as one.
+    const candidates = columns.filter(fits).filter(
+      (column, index, all) =>
+        !all
+          .slice(0, index)
+          .some((earlier) => rows.every((row) => row[earlier] === row[column])),
+    );
+    const sameName = candidates.filter(
+      (column) => normalizeFieldName(column) === normalizeFieldName(field),
+    );
+    const variantCount = new Set(pairs.map(({ row }) => row.variant_id)).size;
+    const column =
+      sameName.length === 1
+        ? sameName[0]
+        : candidates.length === 1 && variantCount > 1
+          ? candidates[0]
+          : null;
+    if (column) aliases.set(field, column);
+  }
+  return aliases;
+}
+
+// Rows are shaped like the served creative: fields filled from differently
+// named feed columns are copied under the creative's field name, and stored
+// content fills fields absent from the feed, such as template defaults.
+export function addStoredVariantContent(rows, tree) {
+  const contentsById = new Map();
+  for (const node of tree?.nodes || []) {
+    for (const variant of node["ad-variants"] || []) {
+      const id = String(variant?.["content-id"] ?? "").trim();
+      const stored = getStoredVariantContent(variant);
+      if (!id || !Object.keys(stored).length) continue;
+      if (!contentsById.has(id)) contentsById.set(id, new Map());
+      contentsById.get(id).set(JSON.stringify(stored), stored);
+    }
+  }
+  const aliases = inferCreativeFieldColumns(rows, contentsById);
+  return rows.flatMap((row) => {
+    const aliased = { ...row };
+    for (const [field, column] of aliases) aliased[field] = row[column];
+    const contents = contentsById.get(String(row.variant_id ?? "").trim());
+    if (!contents) return [aliased];
+    return [...contents.values()].map((stored) => ({ ...stored, ...aliased }));
   });
 }
 
@@ -1252,6 +1419,15 @@ export function summarizeTagVerification({
     items.push({
       status: "warn",
       text: `${unverified} tag(s) could not be matched to exactly one feed variant.`,
+    });
+  }
+  const closest = verified.filter((check) => check.closest).length;
+  if (closest) {
+    items.push({
+      status: "warn",
+      text:
+        `${closest} of ${verified.length} verified tag(s) were accepted as their ` +
+        "closest feed variant without an exact content match.",
     });
   }
 

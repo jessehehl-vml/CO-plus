@@ -465,6 +465,22 @@ function getFeedMappings(record) {
     .map(({ from, to }) => ({ from, to }));
 }
 
+// Keeps only scalar stored content, which the checker compares with tag output.
+function getStoredContentComponents(components) {
+  const kept = {};
+  for (const [key, component] of Object.entries(components || {})) {
+    const content = component?.value?.content;
+    if (!content || typeof content !== "object" || Array.isArray(content)) continue;
+    const scalar = {};
+    for (const [field, item] of Object.entries(content)) {
+      const value = item?.value;
+      if (value === null || typeof value !== "object") scalar[field] = { value };
+    }
+    if (Object.keys(scalar).length) kept[key] = { value: { content: scalar } };
+  }
+  return kept;
+}
+
 function getSimulatorTreeNodes(tree) {
   if (!Array.isArray(tree.nodes)) throw new Error("Decision tree has no nodes.");
   return tree.nodes.map((node) => ({
@@ -479,6 +495,7 @@ function getSimulatorTreeNodes(tree) {
         width: format.width,
         height: format.height,
       })),
+      components: getStoredContentComponents(variant.components),
     })),
   }));
 }

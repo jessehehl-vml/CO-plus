@@ -60,6 +60,14 @@
               value="1"
               required
             />
+            <label class="checkbox-label" for="tag-accept-closest">
+              <input id="tag-accept-closest" type="checkbox" />
+              Accept closest match
+            </label>
+            <p class="note">
+              Counts a tag without an exact content match as the variant with the most
+              matching fields, unless another variant ties. Can be changed during or after a run.
+            </p>
             <button id="verify-tag" type="button" disabled>
               Run all tags
             </button>

@@ -551,6 +551,57 @@ test("lookup feed audiences join content feed variants", async () => {
   );
 });
 
+test("tag verification prioritizes content feed rows even when lookup rows have variant IDs", async () => {
+  const { getTagVerificationRows, compareTagResultToFeed } = await corePromise;
+  const options = {
+    tree: { nodes: [{ "ad-variants": [{ "content-id": "V1" }] }] },
+    context: {
+      inputField: "lineID",
+      valueField: "Audience",
+      targetingColumn: "audience",
+    },
+    lookupRows: [
+      { ID: "V1", lineID: "123", Audience: "Cars", headline: "Lookup copy" },
+    ],
+    contentRows: [
+      { ID: "V1", lineID: "wrong", audience: "Cars", headline: "Creative copy" },
+    ],
+    contentFeedLabel: "Creative content",
+  };
+  const rows = getTagVerificationRows(options);
+  assert.deepEqual(rows, [{
+    ID: "V1",
+    variant_id: "V1",
+    lineID: "123",
+    audience: "Cars",
+    Audience: "Cars",
+    headline: "Creative copy",
+  }]);
+  const match = (headline) => compareTagResultToFeed(
+    { response: { content: { headline: { value: headline } } } },
+    rows,
+    "lineID",
+    "Audience",
+  );
+  assert.deepEqual(match("Creative copy").exactVariantIds, ["V1"]);
+  assert.deepEqual(match("Lookup copy").exactVariantIds, []);
+  assert.deepEqual(
+    getTagVerificationRows({ ...options, contentRows: null }),
+    [{ ...options.lookupRows[0], variant_id: "V1" }],
+  );
+  assert.throws(
+    () => getTagVerificationRows({ ...options, contentRows: [] }),
+    /content feed Creative content has no column with the strategy's variant IDs/,
+  );
+  assert.throws(
+    () => getTagVerificationRows({
+      ...options,
+      contentRows: [{ ID: "V1", headline: "Creative copy" }],
+    }),
+    /content feed Creative content has no audience column/,
+  );
+});
+
 test("strategy suggestions identify reciprocal variant swaps", async () => {
   const { getStrategySuggestions } = await corePromise;
   const suggestions = getStrategySuggestions({
@@ -762,6 +813,187 @@ test("production tag results explain exact and partial feed matches", async () =
   assert.deepEqual(crossAudienceMatch.exactVariantIds, ["V2"]);
   assert.deepEqual(crossAudienceMatch.candidates[0].sourceLineIds, ["trucks-id"]);
   assert.deepEqual(crossAudienceMatch.candidates[0].sourceAudiences, ["Trucks"]);
+});
+
+test("tag results match stored ad-variant content that differs from the feed", async () => {
+  const { addStoredVariantContent, compareTagResultToFeed } = await corePromise;
+  const variant = (id, headline) => ({
+    "content-id": id,
+    components: {
+      "urn:lemonpi:artefact:display:content+template": {
+        value: {
+          content: {
+            headline: { type: "text", value: headline },
+            autoFont: { type: "text", value: "TRUE" },
+            Audience: { type: "text", value: "Stored audience" },
+          },
+        },
+      },
+      "urn:lemonpi:artefact:display:third-party-click-trackers": { value: [] },
+    },
+  });
+  const tree = {
+    nodes: [
+      { "ad-variants": [variant("V1", "Car creative"), variant("V1", "Car creative")] },
+      { "ad-variants": [variant("V2", "Truck creative")] },
+    ],
+  };
+  const feedRows = [
+    { lineID: "cars-id", Audience: "Cars", variant_id: "V1", Headline: "Car creative" },
+    { lineID: "trucks-id", Audience: "Trucks", variant_id: "V2", Headline: "Truck creative" },
+  ];
+  const rows = addStoredVariantContent(feedRows, tree);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].Audience, "Cars");
+
+  const match = compareTagResultToFeed(
+    {
+      response: {
+        content: {
+          headline: { type: "text", value: "Car creative" },
+          autoFont: { type: "text", value: "TRUE" },
+          products: { type: "collection", value: [{ name: { value: "Laptop" } }] },
+        },
+      },
+    },
+    rows,
+    "lineID",
+    "Audience",
+  );
+  assert.deepEqual(match.exactVariantIds, ["V1"]);
+  assert.deepEqual(match.contentFields.map(({ field }) => field), ["headline", "autoFont"]);
+  assert.deepEqual(match.candidates[0].sourceAudiences, ["Cars"]);
+});
+
+test("stored variant content cannot hide conflicting content feed values or blanks", async () => {
+  const { addStoredVariantContent, compareTagResultToFeed } = await corePromise;
+  const content = {
+    headline: { value: "Stored copy" },
+    autoFont: { value: "TRUE" },
+    template: { value: "Default template" },
+  };
+  const rows = addStoredVariantContent(
+    [{ variant_id: "V1", headline: "Feed copy", autoFont: "" }],
+    {
+      nodes: [{
+        "ad-variants": [{
+          "content-id": "V1",
+          components: { display: { value: { content } } },
+        }],
+      }],
+    },
+  );
+  const match = compareTagResultToFeed(
+    { response: { content } },
+    rows,
+    "lineID",
+    "Audience",
+  );
+  assert.deepEqual(match.exactVariantIds, []);
+  assert.deepEqual(match.candidates[0].matchedFields, ["template"]);
+  assert.deepEqual(match.candidates[0].differingFields, [
+    { field: "headline", tagValue: "Stored copy", feedValue: "Feed copy" },
+    { field: "autoFont", tagValue: "TRUE", feedValue: "" },
+  ]);
+});
+
+test("creative fields are matched to differently named content feed columns", async () => {
+  const { addStoredVariantContent, compareTagResultToFeed } = await corePromise;
+  const stored = {
+    V1: { consumerType: "DCOM", autoFont_300x250: "TRUE", headline: "One" },
+    V2: { consumerType: "GAM", autoFont_300x250: "TRUE", headline: "Two" },
+  };
+  const tree = {
+    nodes: [{
+      "ad-variants": Object.entries(stored).map(([id, content]) => ({
+        "content-id": id,
+        components: {
+          display: {
+            value: {
+              content: Object.fromEntries(
+                Object.entries(content).map(([field, value]) => [field, { value }]),
+              ),
+            },
+          },
+        },
+      })),
+    }],
+  };
+  const feedRows = [
+    {
+      variant_id: "V1",
+      "Consumer Type": "DCOM",
+      Consumer_Type: "DCOM",
+      AutoFont: "TRUE",
+      autoFont_300x250: "",
+      headline: "One",
+    },
+    {
+      variant_id: "V2",
+      "Consumer Type": "GAM",
+      Consumer_Type: "GAM",
+      AutoFont: "TRUE",
+      autoFont_300x250: "",
+      headline: "Two",
+    },
+  ];
+  const match = (content) =>
+    compareTagResultToFeed(
+      {
+        response: {
+          content: Object.fromEntries(
+            Object.entries(content).map(([field, value]) => [field, { value }]),
+          ),
+        },
+      },
+      addStoredVariantContent(feedRows, tree),
+      "lineID",
+      "Audience",
+    );
+  assert.deepEqual(match(stored.V2).exactVariantIds, []);
+  assert.deepEqual(match(stored.V2).candidates[0].differingFields, [
+    { field: "autoFont_300x250", tagValue: "TRUE", feedValue: "" },
+  ]);
+  const { autoFont_300x250, ...withoutAutoFont } = stored.V2;
+  assert.deepEqual(match(withoutAutoFont).exactVariantIds, ["V2"]);
+  assert.deepEqual(match({ ...withoutAutoFont, consumerType: "DCOM" }).exactVariantIds, []);
+});
+
+test("closest match is the unique best candidate", async () => {
+  const { compareTagResultToFeed, getClosestVariantId, summarizeTagVerification } =
+    await corePromise;
+  const rows = [
+    { lineID: "1", Audience: "A", variant_id: "V1", headline: "One", font: "" },
+    { lineID: "2", Audience: "B", variant_id: "V2", headline: "Two", font: "" },
+    { lineID: "3", Audience: "C", variant_id: "V3", headline: "Two", font: "" },
+  ];
+  const match = (content) =>
+    compareTagResultToFeed(
+      { response: { content } },
+      rows,
+      "lineID",
+      "Audience",
+    );
+  const oneDiffers = match({ headline: { value: "One" }, font: { value: "TRUE" } });
+  assert.deepEqual(oneDiffers.exactVariantIds, []);
+  assert.equal(getClosestVariantId(oneDiffers), "V1");
+  assert.equal(
+    getClosestVariantId(match({ headline: { value: "Two" }, font: { value: "TRUE" } })),
+    null,
+  );
+  assert.equal(getClosestVariantId(match({ headline: { value: "Other" } })), null);
+
+  const summary = summarizeTagVerification({
+    checks: [
+      { label: "a", exact: true, variantId: "V1", expectedVariants: ["V1"] },
+      { label: "b", exact: true, closest: true, variantId: "V1", expectedVariants: ["V1"] },
+    ],
+  });
+  assert.ok(
+    summary.items.some((item) =>
+      item.text.startsWith("1 of 2 verified tag(s) were accepted as their closest"),
+    ),
+  );
 });
 
 test("simulation uses strategy variants and reports a feed mismatch", async () => {
